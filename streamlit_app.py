@@ -9,6 +9,9 @@ import time
 from datetime import datetime, timedelta
 import pandas as pd
 
+# --- Đặt cấu hình trang đầu tiên ---
+st.set_page_config(page_title="Quản lý nhập liệu", page_icon="💻")
+
 # --- CSS để bôi đỏ trường bắt buộc ---
 st.markdown("""
     <style>
@@ -212,7 +215,8 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
         if column == "Tất cả":
             filtered_data = [row for row in data if any(keyword in str(value).lower() for value in row.values())]
         else:
-            filtered_data = [row for row in data if keyword in str(row.get(column, '')).lower()]
+            clean_column = column.rstrip('*')  # Loại bỏ * nếu có
+            filtered_data = [row for row in data if keyword in str(row.get(clean_column, '')).lower()]
         return headers, filtered_data
     except Exception as e:
         st.error(f"Lỗi khi tìm kiếm dữ liệu: {e}")
@@ -220,9 +224,6 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
 
 # --- Giao diện chính ---
 def main():
-    st.set_page_config(page_title="Quản lý nhập liệu", page_icon="💻")
-    st.title("Ứng dụng quản lý nhập liệu")
-
     # Khởi tạo session state
     if 'login' not in st.session_state:
         st.session_state.login = False
@@ -263,6 +264,8 @@ def main():
         "Chọn chức năng",
         ["Điều hướng", "Đổi mật khẩu", "Nhập liệu", "Xem và sửa dữ liệu", "Tìm kiếm", "Đăng xuất"]
     )
+
+    st.title("Ứng dụng quản lý nhập liệu")
 
     if not st.session_state.login:
         # Giao diện đăng nhập
@@ -460,7 +463,7 @@ def main():
                 st.error("Không tìm thấy sheet tra cứu hợp lệ.")
             else:
                 selected_lookup_sheet = st.selectbox("Chọn sheet để tìm kiếm", lookup_sheets, key="lookup_sheet")
-                headers = get_columns(sh, selected_lookup_sheet)[0] + get_columns(sh, selected_lookup_sheet)[1]
+                headers = [h.rstrip('*') for h in get_columns(sh, selected_lookup_sheet)[0]] + get_columns(sh, selected_lookup_sheet)[1]
                 search_column = st.selectbox("Chọn cột để tìm kiếm", ["Tất cả"] + headers, key="search_column")
                 keyword = st.text_input("Nhập từ khóa tìm kiếm", key="search_keyword")
                 if st.button("Tìm kiếm", key="search_button"):

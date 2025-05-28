@@ -46,28 +46,11 @@ def is_strong_password(password):
         return False, "Mật khẩu phải chứa ít nhất một ký tự đặc biệt."
     return True, ""
 
-# --- Lấy danh sách người dùng từ sheet "User" và tự động hash nếu chưa ---
+# --- Lấy danh sách người dùng từ sheet "User" ---
 def get_users(sh):
     try:
         worksheet = sh.worksheet("User")
         data = worksheet.get_all_records()
-        updated = False
-
-        for idx, user in enumerate(data):
-            pw = user.get('Password', '')
-            if not pw:
-                continue
-
-            pw = str(pw)
-            if not is_hashed(pw):
-                hashed = hash_password(pw)
-                worksheet.update_cell(idx + 2, 2, hashed)
-                user['Password'] = hashed
-                updated = True
-
-        if updated:
-            st.success("Đã tự động mã hóa các mật khẩu chưa hash.")
-        
         return data
     except Exception as e:
         st.error(f"Lỗi khi lấy dữ liệu người dùng: {e}")
@@ -77,13 +60,19 @@ def get_users(sh):
 def check_login(sh, username, password):
     if not username or not password:
         st.error("Tên đăng nhập hoặc mật khẩu không được để trống.")
-        return None
+        return None, False
     users = get_users(sh)
     hashed_input = hash_password(password)
     for user in users:
-        if user.get('Username') == username and user.get('Password') == hashed_input:
-            return user.get('Role', 'User')
-    return None
+        stored_password = str(user.get('Password', ''))
+        if user.get('Username') == username:
+            # Kiểm tra mật khẩu thô
+            if stored_password == password:
+                return user.get('Role', 'User'), True  # True: bắt buộc đổi mật khẩu
+            # Kiểm tra mật khẩu hash
+            if stored_password == hashed_input:
+                return user.get('Role', 'User'), False  # False: không cần đổi
+    return None, False
 
 # --- Đổi mật khẩu ---
 def change_password(sh, username, old_pw, new_pw):
@@ -94,7 +83,8 @@ def change_password(sh, username, old_pw, new_pw):
         hashed_new = hash_password(new_pw)
 
         for idx, user in enumerate(data):
-            if user.get('Username') == username and user.get('Password') == hashed_old:
+            stored_password = str(user.get('Password', ''))
+            if user.get('Username') == username and (stored_password == old_pw or stored_password == hashed_old):
                 worksheet.update_cell(idx + 2, 2, hashed_new)
                 return True
         return False
@@ -118,6 +108,10 @@ def main():
         st.session_state.login_attempts = 0
     if 'lockout_time' not in st.session_state:
         st.session_state.lockout_time = 0
+    if 'show_change_password' not in st.session_state:
+        st.session_state.show_change_password = False
+    if 'force_change_password' not in st.session_state:
+        st.session_state.force_change_password = False
 
     # Kiểm tra khóa tài khoản
     if st.session_state.lockout_time > time.time():
@@ -140,13 +134,17 @@ def main():
                 if not sh:
                     return
 
-                role = check_login(sh, username.strip(), password)
+                role, force_change = check_login(sh, username.strip(), password)
                 if role:
                     st.session_state.login = True
                     st.session_state.username = username.strip()
                     st.session_state.role = role
                     st.session_state.login_attempts = 0
+                    st.session_state.show_change_password = force_change
+                    st.session_state.force_change_password = force_change
                     st.success(f"Đăng nhập thành công với quyền: {role}")
+                    if force_change:
+                        st.warning("Mật khẩu của bạn chưa được mã hóa. Vui lòng đổi mật khẩu ngay.")
                     time.sleep(1)
                     st.rerun()
                 else:
@@ -155,46 +153,60 @@ def main():
     else:
         st.write(f"👋 Xin chào **{st.session_state.username}**! Quyền: **{st.session_state.role}**")
         
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            if st.button("Đăng xuất"):
-                st.session_state.login = False
-                st.session_state.username = ''
-                st.session_state.role = ''
-                st.session_state.login_attempts = 0
-                st.success("Đã đăng xuất!")
-                time.sleep(1)
-                st.rerun()
+        # Hiển thị nút Đăng xuất và Đổi mật khẩu nếu không bắt buộc đổi
+        if not st.session_state.force_change_password:
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.button("Đăng xuất"):
+                    st.session_state.login = False
+                    st.session_state.username = ''
+                    st.session_state.role = ''
+                    st.session_state.login_attempts = 0
+                    st.session_state.show_change_password = False
+                    st.session_state.force_change_password = False
+                    st.success("Đã đăng xuất!")
+                    time.sleep(1)
+                    st.rerun()
+            
+            with col2:
+                if st.button("Đổi mật khẩu"):
+                    st.session_state.show_change_password = True
+                    st.rerun()
 
-        st.subheader("🔒 Đổi mật khẩu (tùy chọn)")
-        with st.form("change_password_form"):
-            old_pw = st.text_input("Mật khẩu cũ", type="password", max_chars=50)
-            new_pw = st.text_input("Mật khẩu mới", type="password", max_chars=50)
-            new_pw2 = st.text_input("Nhập lại mật khẩu mới", type="password", max_chars=50)
-            submit_change = st.form_submit_button("Cập nhật mật khẩu")
+        # Hiển thị form đổi mật khẩu nếu cần
+        if st.session_state.show_change_password:
+            st.subheader("🔒 Đổi mật khẩu")
+            with st.form("change_password_form"):
+                old_pw = st.text_input("Mật khẩu cũ", type="password", max_chars=50)
+                new_pw = st.text_input("Mật khẩu mới", type="password", max_chars=50)
+                new_pw2 = st.text_input("Nhập lại mật khẩu mới", type="password", max_chars=50)
+                submit_change = st.form_submit_button("Cập nhật mật khẩu")
 
-            if submit_change:
-                if not old_pw or not new_pw or not new_pw2:
-                    st.error("Vui lòng nhập đầy đủ các trường.")
-                elif new_pw != new_pw2:
-                    st.error("Mật khẩu mới không khớp.")
-                else:
-                    is_strong, msg = is_strong_password(new_pw)
-                    if not is_strong:
-                        st.error(msg)
+                if submit_change:
+                    if not old_pw or not new_pw or not new_pw2:
+                        st.error("Vui lòng nhập đầy đủ các trường.")
+                    elif new_pw != new_pw2:
+                        st.error("Mật khẩu mới không khớp.")
                     else:
-                        sh = connect_to_gsheets()
-                        if not sh:
-                            return
-                        if change_password(sh, st.session_state.username, old_pw, new_pw):
-                            st.success("🎉 Đổi mật khẩu thành công! Vui lòng đăng nhập lại.")
-                            time.sleep(1)
-                            st.session_state.login = False
-                            st.session_state.username = ''
-                            st.session_state.role = ''
-                            st.rerun()
+                        is_strong, msg = is_strong_password(new_pw)
+                        if not is_strong:
+                            st.error(msg)
                         else:
-                            st.error("Mật khẩu cũ không chính xác.")
+                            sh = connect_to_gsheets()
+                            if not sh:
+                                return
+                            if change_password(sh, st.session_state.username, old_pw, new_pw):
+                                st.success("🎉 Đổi mật khẩu thành công! Vui lòng đăng nhập lại.")
+                                st.session_state.login = False
+                                st.session_state.username = ''
+                                st.session_state.role = ''
+                                st.session_state.login_attempts = 0
+                                st.session_state.show_change_password = False
+                                st.session_state.force_change_password = False
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error("Mật khẩu cũ không chính xác.")
 
 if __name__ == "__main__":
     main()

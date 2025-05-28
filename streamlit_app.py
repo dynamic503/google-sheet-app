@@ -10,14 +10,49 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 # --- Đặt cấu hình trang đầu tiên ---
-st.set_page_config(page_title="Quản lý nhập liệu", page_icon="💻")
+st.set_page_config(page_title="Quản lý nhập liệu - Agribank", page_icon="💻")
 
-# --- CSS để bôi đỏ trường bắt buộc ---
+# --- CSS để thiết kế giao diện hiện đại, tông đỏ Agribank ---
 st.markdown("""
     <style>
+    /* Sidebar nền */
+    .css-1d391kg {
+        background-color: #F5F5F5;
+    }
+    /* Nút sidebar */
+    .stButton>button {
+        width: 100%;
+        background-color: #A91B2A;
+        color: white;
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 16px;
+        font-weight: 500;
+        border: none;
+        margin-bottom: 5px;
+        transition: background-color 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #8B1623;
+        color: white;
+    }
+    /* Trường bắt buộc bôi đỏ */
     .required-label {
         color: red;
         font-weight: bold;
+    }
+    /* Logo và chữ chi nhánh */
+    .sidebar-logo {
+        display: block;
+        margin: 0 auto;
+        width: 120px;
+    }
+    .branch-text {
+        text-align: center;
+        font-size: 14px;
+        font-weight: bold;
+        color: #333333;
+        margin-top: 10px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -294,7 +329,7 @@ def main():
     if 'edit_sheet' not in st.session_state:
         st.session_state.edit_sheet = None
     if 'selected_function' not in st.session_state:
-        st.session_state.selected_function = "all"
+        st.session_state.selected_function = "Nhập liệu"  # Mặc định chọn menu đầu tiên
 
     # Kết nối Google Sheets
     sh = connect_to_gsheets()
@@ -306,16 +341,20 @@ def main():
         st.error(f"Tài khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
         return
 
-    # Sidebar điều hướng với các nút
+    # Sidebar: Logo, chữ chi nhánh, và menu điều hướng
+    st.sidebar.image("https://via.placeholder.com/150", use_column_width=False, output_format="auto", caption="", width=120)
+    st.sidebar.markdown('<div class="branch-text">Chi nhánh Việt Nam</div>', unsafe_allow_html=True)
+    st.sidebar.markdown("---")
+    
     st.sidebar.title("Điều hướng")
-    functions = ["Đổi mật khẩu", "Nhập liệu", "Xem và sửa dữ liệu", "Tìm kiếm", "Đăng xuất"]
-    if st.sidebar.button("Hiển thị tất cả", key="show_all"):
-        st.session_state.selected_function = "all"
+    functions = ["Nhập liệu", "Xem và sửa dữ liệu", "Tìm kiếm", "Đổi mật khẩu", "Đăng xuất"]
     for func in functions:
         if st.sidebar.button(func, key=f"nav_{func}"):
             st.session_state.selected_function = func
+    if st.sidebar.button("Hiển thị tất cả", key="show_all"):
+        st.session_state.selected_function = "all"
 
-    st.title("Ứng dụng quản lý nhập liệu")
+    st.title("Ứng dụng quản lý nhập liệu - Agribank")
 
     if not st.session_state.login:
         # Giao diện đăng nhập
@@ -361,7 +400,7 @@ def main():
             st.session_state.edit_mode = False
             st.session_state.edit_row_idx = None
             st.session_state.edit_sheet = None
-            st.session_state.selected_function = "all"
+            st.session_state.selected_function = "Nhập liệu"
             st.success("Đã đăng xuất!")
             time.sleep(1)
             st.rerun()

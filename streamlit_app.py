@@ -25,7 +25,7 @@ st.markdown("""
 # --- Kết nối Google Sheets ---
 def connect_to_gsheets():
     try:
-        scope = ['https://spreadsheets.google.com/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
         sheet_id = os.getenv("SHEET_ID")
         
@@ -34,14 +34,58 @@ def connect_to_gsheets():
             return None
         
         creds_dict = json.loads(creds_json)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict-creds_json, scopes=scope
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         return client.open_by_key(sheet_id)
     except Exception as e:
         st.error(f"Lỗi kết nối Google Sheets: {e}")
         return None
 
-# --- Kiểm tra xem chuỗi có mã hóa SHA256 không ---
+# --- Đọc cấu hình từ sheet Config ---
+def get_sheet_config(sh):
+    try:
+        worksheet = sh.worksheet("Config")
+        data = worksheet.get_all_records()
+        return data
+    except Exception as e:
+        st.error(f"Lỗi khi đọc sheet Config: {e}")
+        return []
+
+# --- Lấy danh sách sheet nhập liệu từ Config ---
+def get_input_sheets(sh):
+    try:
+        config = get_sheet_config(sh)
+        sheets = [row['Sheetname'] for row in config if row.get('Nhập') == 1]
+        # Kiểm tra sheet tồn tại
+        existing_sheets = [ws.title for ws in sh.worksheets()]
+        return [s for s in sheets if s in existing_sheets]
+    except Exception as e:
+        st.error(f"Lỗi khi lấy danh sách sheet nhập liệu: {e}")
+        return []
+
+# --- Lấy danh sách sheet tra cứu từ Config ---
+def get_lookup_sheets(sh):
+    try:
+        config = get_sheet_config(sh)
+        sheets = [row['Sheetname'] for row in config if row.get('Tìm kiếm') == 1]
+        existing_sheets = [ws.title for ws in sh.worksheets()]
+        return [s for s in sheets if s in existing_sheets]
+    except Exception as e:
+        st.error(f"Lỗi khi lấy danh sách sheet tra cứu: {e}")
+        return []
+
+# --- Lấy danh sách sheet xem đã nhập từ Config ---
+def get_view_sheets(sh):
+    try:
+        config = get_sheet_config(sh)
+        sheets = [row['Sheetname'] for row in config if row.get('Xem đã nhập') == 1]
+        existing_sheets = [ws.title for ws in sh.worksheets()]
+        return [s for s in sheets if s in existing_sheets]
+    except Exception as e:
+        st.error(f"Lỗi khi lấy danh sách sheet xem đã nhập: {e}")
+        return []
+
+# --- Kiểm tra xem chuỗi có mã hóa SHA256 chưa ---
 def is_hashed(pw):
     return isinstance(pw, str) and len(pw) == 64 and re.fullmatch(r'[0-9a-fA-F]+', pw)
 
@@ -57,14 +101,14 @@ def is_strong_password(password):
         return False, "Mật khẩu phải chứa ít nhất một chữ cái in hoa."
     if not re.search(r'[0-9]', str(password)):
         return False, "Mật khẩu phải chứa ít nhất một số."
-    elif not re.search(r'[!@#$%^&*(),.?":{}|<>]', str(password)):
+    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', str(password)):
         return False, "Mật khẩu phải chứa ít nhất một ký tự đặc biệt."
     return True, ""
 
 # --- Lấy danh sách người dùng từ sheet "User" ---
 def get_users(sh):
     try:
-        worksheet = sh.worksheet("Users")
+        worksheet = sh.worksheet("User")
         data = worksheet.get_all_records()
         return data
     except Exception as e:
@@ -88,42 +132,22 @@ def check_login(sh, username, password):
     return None, False
 
 # --- Đổi mật khẩu ---
-def change_password(sh, username, old_password, new_password):
+def change_password(sh, username, old_pw, new_pw):
     try:
-        worksheet = sh.worksheet("Users")
+        worksheet = sh.worksheet("User")
         data = worksheet.get_all_records()
-        hashed_old = hash_password(old_password)
-        hashed_new = hash_password(new_password)
+        hashed_old = hash_password(old_pw)
+        hashed_new = hash_password(new_pw)
 
         for idx, user in enumerate(data):
             stored_password = str(user.get('Password', ''))
-            if user.get('Username') == username and (stored_password == old_password or stored_password == hashed_old):
+            if user.get('Username') == username and (stored_password == old_pw or stored_password == hashed_old):
                 worksheet.update_cell(idx + 2, 2, hashed_new)
                 return True
         return False
     except Exception as e:
         st.error(f"Lỗi khi đổi mật khẩu: {e}")
         return False
-
-# --- Lấy danh sách sheet nhập liệu ---
-def get_input_sheets(sh):
-    try:
-        valid_sheets = ["NhapThongTinDichVu", "NhapThongTinKHTiemNang"]
-        sheets = [ws.title for ws in sh.worksheets() if ws.title in valid_sheets]
-        return sheets
-    except Exception as e:
-        st.error(f"Lỗi khi lấy danh sách sheet nhập liệu: {e}")
-        return []
-
-# --- Lấy danh sách sheet tra cứu ---
-def get_lookup_sheets(sh):
-    try:
-        valid_sheets = ["ThongTinCacDichVu", "ThongTinVayCuaKH"]
-        sheets = [ws.title for ws in sh.worksheets() if ws.title in valid_sheets]
-        return sheets
-    except Exception as e:
-        st.error(f"Lỗi khi lấy danh sách sheet tra cứu: {e}")
-        return []
 
 # --- Lấy tiêu đề cột từ sheet, tách cột bắt buộc (*) ---
 def get_columns(sh, sheet_name):
@@ -189,9 +213,7 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
         headers = worksheet.row_values(1)
         filtered_data = []
         for idx, row in enumerate(data):
-            # Admin thấy tất cả, user chỉ thấy của mình
             if role.lower() == 'admin' or row.get("Nguoi_nhap") == username:
-                # Lọc thời gian
                 if start_date and end_date:
                     try:
                         entry_time = datetime.strptime(row.get("Thoi_gian_nhap", ""), "%Y-%m-%d %H:%M:%S")
@@ -199,7 +221,6 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
                             continue
                     except ValueError:
                         continue
-                # Lọc từ khóa
                 if keyword:
                     keyword = keyword.lower()
                     if not any(keyword in str(value).lower() for value in row.values()):
@@ -219,7 +240,7 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
         if not keyword:
             return headers, data
         keyword = keyword.lower()
-        if columns == "Tất cả":
+        if column == "Tất cả":
             filtered_data = [row for row in data if any(keyword in str(value).lower() for value in row.values())]
         else:
             clean_column = column.rstrip('*')
@@ -253,7 +274,7 @@ def main():
     if 'edit_sheet' not in st.session_state:
         st.session_state.edit_sheet = None
     if 'selected_function' not in st.session_state:
-        st.session_state.selected_function = "all"  # Mặc định hiển thị tất cả
+        st.session_state.selected_function = "all"
 
     # Kết nối Google Sheets
     sh = connect_to_gsheets()
@@ -261,7 +282,7 @@ def main():
         return
 
     # Kiểm tra khóa tài khoản
-    if st.session_state.lockout_time > 0:
+    if st.session_state.lockout_time > time.time():
         st.error(f"Tài khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
         return
 
@@ -274,7 +295,7 @@ def main():
         if st.sidebar.button(func, key=f"nav_{func}"):
             st.session_state.selected_function = func
 
-    st.title("Ứng dụng quản lý dữ liệu")
+    st.title("Ứng dụng quản lý nhập liệu")
 
     if not st.session_state.login:
         # Giao diện đăng nhập
@@ -357,23 +378,23 @@ def main():
                                     time.sleep(1)
                                     st.rerun()
                                 else:
-                                    st.error("Mật khẩu cũ không đúng.")
+                                    st.error("Mật khẩu cũ không chính xác.")
 
         if st.session_state.selected_function in ["all", "Nhập liệu"] and not st.session_state.force_change_password:
             # Nhập liệu
-            st.subheader("📝 Nhập dữ liệu")
+            st.subheader("📝 Nhập liệu")
             input_sheets = get_input_sheets(sh)
             if not input_sheets:
-                st.error("Không tìm thấy sheet nhập liệu phù hợp.")
+                st.error("Không tìm thấy sheet nhập liệu hợp lệ.")
             else:
-                selected_sheet = st.selectbox("Select sheet to input", input_sheets, key="input_sheet")
+                selected_sheet = st.selectbox("Chọn sheet để nhập liệu", input_sheets, key="input_sheet")
                 required_columns, optional_columns = get_columns(sh, selected_sheet)
                 if required_columns or optional_columns:
                     with st.form(f"input_form_{selected_sheet}"):
                         form_data = {}
                         for header in required_columns:
                             clean_header = header.rstrip('*')
-                            st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_html=True)
+                            st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
                             form_data[clean_header] = st.text_input("", key=f"{selected_sheet}_{clean_header}_input")
                         for header in optional_columns:
                             clean_header = header.rstrip('*')
@@ -385,32 +406,31 @@ def main():
                             if missing_required:
                                 st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                             else:
-                                if add_data_to_submit(sh, selected_sheet, form_data, st.session_state.username):
-                                    st.success("Dữ liệu đã được nhập thành công!")
+                                if add_data_to_sheet(sh, selected_sheet, form_data, st.session_state.username):
+                                    st.success("🎉 Dữ liệu đã được nhập thành công!")
                                 else:
                                     st.error("Lỗi khi nhập dữ liệu. Vui lòng thử lại.")
 
         if st.session_state.selected_function in ["all", "Xem và sửa dữ liệu"] and not st.session_state.force_change_password:
             # Xem và sửa dữ liệu đã nhập
             st.subheader("📊 Xem và sửa dữ liệu đã nhập")
-            input_sheets = get_input_sheets(sh)
-            if not input_sheets:
-                st.error("Không tìm thấy sheet nhập liệu hợp lệ.")
+            view_sheets = get_view_sheets(sh)
+            if not view_sheets:
+                st.error("Không tìm thấy sheet xem dữ liệu hợp lệ.")
             else:
-                selected_view_sheet = st.selectbox("Chọn sheet để xem", input_sheets, key="view_sheet")
-                # Bộ lọc thời gian
+                selected_view_sheet = st.selectbox("Chọn sheet để xem", view_sheets, key="view_sheet")
                 col1, col2 = st.columns(2)
                 with col1:
-                    start_date = st.date_input("Từ ngày", datetime.now().date() - timedelta(days=30), key="start_date")
+                    start_date = st.date_input("Từ ngày", value=datetime.now().date() - timedelta(days=30), key="start_date")
                 with col2:
-                    end_date = st.date_input("Đến ngày", datetime.now().date(), key="end_date")
-                # Tìm kiếm bản ghi
+                    end_date = st.date_input("Đến ngày", value=datetime.now().date(), key="end_date")
                 search_keyword = st.text_input("Tìm kiếm bản ghi", key="view_search_keyword")
                 
-                headers, user_data = get_user_data(sh, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword)
+                headers, user_data = get_user_data(
+                    sh, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword
+                )
                 if headers and user_data:
                     df = pd.DataFrame([row for _, row in user_data])
-                    # Thêm cột nút Sửa
                     df['Sửa'] = [idx for idx, _ in user_data]
                     st.dataframe(
                         df,
@@ -429,7 +449,6 @@ def main():
                         }
                     )
 
-                    # Form sửa bản ghi
                     if st.session_state.edit_mode and st.session_state.edit_sheet == selected_view_sheet:
                         st.subheader(f"Chỉnh sửa bản ghi dòng {st.session_state.edit_row_idx + 2}")
                         required_columns, optional_columns = get_columns(sh, selected_view_sheet)
@@ -438,7 +457,7 @@ def main():
                             edit_row = next(row for idx, row in user_data if idx == st.session_state.edit_row_idx)
                             for header in required_columns:
                                 clean_header = header.rstrip('*')
-                                st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_form=True)
+                                st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
                                 edit_data[clean_header] = st.text_input(
                                     "", 
                                     value=edit_row.get(clean_header, ''), 
@@ -460,7 +479,7 @@ def main():
                                     st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                                 else:
                                     if update_data_in_sheet(sh, selected_view_sheet, st.session_state.edit_row_idx, edit_data, st.session_state.username):
-                                        st.success("Bản ghi đã được cập nhật thành công!")
+                                        st.success("🎉 Bản ghi đã được cập nhật thành công!")
                                         st.session_state.edit_mode = False
                                         st.session_state.edit_row_idx = None
                                         st.session_state.edit_sheet = None
@@ -483,7 +502,7 @@ def main():
                 st.error("Không tìm thấy sheet tra cứu hợp lệ.")
             else:
                 selected_lookup_sheet = st.selectbox("Chọn sheet để tìm kiếm", lookup_sheets, key="lookup_sheet")
-                headers = [h.rstrip('*') for h in get_columns(sh, selected_lookup_sheet)[0]] + [h for h in get_columns(sh, selected_lookup_sheet)[1]]
+                headers = [h.rstrip('*') for h in get_columns(sh, selected_lookup_sheet)[0]] + get_columns(sh, selected_lookup_sheet)[1]
                 search_column = st.selectbox("Chọn cột để tìm kiếm", ["Tất cả"] + headers, key="search_column")
                 keyword = st.text_input("Nhập từ khóa tìm kiếm", key="search_keyword")
                 if st.button("Tìm kiếm", key="search_button"):

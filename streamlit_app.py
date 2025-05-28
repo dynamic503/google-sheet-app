@@ -28,7 +28,6 @@ def connect_to_gsheets():
 
 # --- Kiểm tra xem chuỗi đã mã hóa SHA256 chưa ---
 def is_hashed(pw):
-    # Kiểm tra nếu pw là chuỗi và có định dạng SHA256
     return isinstance(pw, str) and len(pw) == 64 and re.fullmatch(r'[0-9a-fA-F]+', pw)
 
 # --- Hàm mã hóa mật khẩu ---
@@ -56,10 +55,9 @@ def get_users(sh):
 
         for idx, user in enumerate(data):
             pw = user.get('Password', '')
-            if not pw:  # Bỏ qua nếu ô Password trống
+            if not pw:
                 continue
 
-            # Chuyển đổi pw thành chuỗi nếu nó không phải chuỗi
             pw = str(pw)
             if not is_hashed(pw):
                 hashed = hash_password(pw)
@@ -78,6 +76,7 @@ def get_users(sh):
 # --- Xác thực người dùng ---
 def check_login(sh, username, password):
     if not username or not password:
+        st.error("Tên đăng nhập hoặc mật khẩu không được để trống.")
         return None
     users = get_users(sh)
     hashed_input = hash_password(password)
@@ -133,7 +132,7 @@ def main():
 
             if submit:
                 if st.session_state.login_attempts >= 5:
-                    st.session_state.lockout_time = time.time() + 300  # Khóa 5 phút
+                    st.session_state.lockout_time = time.time() + 300
                     st.error("Quá nhiều lần thử đăng nhập. Tài khoản bị khóa trong 5 phút.")
                     return
 
@@ -167,7 +166,7 @@ def main():
                 time.sleep(1)
                 st.rerun()
 
-        st.subheader("🔒 Đổi mật khẩu")
+        st.subheader("🔒 Đổi mật khẩu (tùy chọn)")
         with st.form("change_password_form"):
             old_pw = st.text_input("Mật khẩu cũ", type="password", max_chars=50)
             new_pw = st.text_input("Mật khẩu mới", type="password", max_chars=50)

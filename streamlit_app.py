@@ -342,8 +342,8 @@ def main():
         return
 
     # Sidebar: Logo, chữ chi nhánh, và menu điều hướng
-    st.sidebar.image("https://via.placeholder.com/150", use_column_width=False, output_format="auto", caption="", width=120)
-    st.sidebar.markdown('<div class="branch-text">Chi nhánh Việt Nam</div>', unsafe_allow_html=True)
+    st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/6/65/Logo_Agribank.svg", use_container_width=False, output_format="auto", caption="", width=120)
+    st.sidebar.markdown('<div class="branch-text">Chi nhánh tỉnh Quảng Trị</div>', unsafe_allow_html=True)
     st.sidebar.markdown("---")
     
     st.sidebar.title("Điều hướng")

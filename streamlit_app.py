@@ -46,7 +46,13 @@ def get_sheet_config(sh):
     try:
         worksheet = sh.worksheet("Config")
         data = worksheet.get_all_records()
+        if not data:
+            st.error("Sheet Config trống. Vui lòng thêm dữ liệu với các cột: Sheetname, Tìm kiếm, Nhập, Xem đã nhập.")
+            return []
         return data
+    except gspread.exceptions.WorksheetNotFound:
+        st.error("Không tìm thấy sheet 'Config' trong Google Sheets. Vui lòng tạo sheet 'Config' với các cột: Sheetname, Tìm kiếm, Nhập, Xem đã nhập.")
+        return []
     except Exception as e:
         st.error(f"Lỗi khi đọc sheet Config: {e}")
         return []
@@ -55,10 +61,14 @@ def get_sheet_config(sh):
 def get_input_sheets(sh):
     try:
         config = get_sheet_config(sh)
+        if not config:
+            return []
         sheets = [row['Sheetname'] for row in config if row.get('Nhập') == 1]
-        # Kiểm tra sheet tồn tại
         existing_sheets = [ws.title for ws in sh.worksheets()]
-        return [s for s in sheets if s in existing_sheets]
+        valid_sheets = [s for s in sheets if s in existing_sheets]
+        if not valid_sheets:
+            st.warning("Không tìm thấy sheet nhập liệu nào hợp lệ theo cấu hình Config.")
+        return valid_sheets
     except Exception as e:
         st.error(f"Lỗi khi lấy danh sách sheet nhập liệu: {e}")
         return []
@@ -67,9 +77,14 @@ def get_input_sheets(sh):
 def get_lookup_sheets(sh):
     try:
         config = get_sheet_config(sh)
+        if not config:
+            return []
         sheets = [row['Sheetname'] for row in config if row.get('Tìm kiếm') == 1]
         existing_sheets = [ws.title for ws in sh.worksheets()]
-        return [s for s in sheets if s in existing_sheets]
+        valid_sheets = [s for s in sheets if s in existing_sheets]
+        if not valid_sheets:
+            st.warning("Không tìm thấy sheet tra cứu nào hợp lệ theo cấu hình Config.")
+        return valid_sheets
     except Exception as e:
         st.error(f"Lỗi khi lấy danh sách sheet tra cứu: {e}")
         return []
@@ -78,9 +93,14 @@ def get_lookup_sheets(sh):
 def get_view_sheets(sh):
     try:
         config = get_sheet_config(sh)
+        if not config:
+            return []
         sheets = [row['Sheetname'] for row in config if row.get('Xem đã nhập') == 1]
         existing_sheets = [ws.title for ws in sh.worksheets()]
-        return [s for s in sheets if s in existing_sheets]
+        valid_sheets = [s for s in sheets if s in existing_sheets]
+        if not valid_sheets:
+            st.warning("Không tìm thấy sheet xem dữ liệu nào hợp lệ theo cấu hình Config.")
+        return valid_sheets
     except Exception as e:
         st.error(f"Lỗi khi lấy danh sách sheet xem đã nhập: {e}")
         return []
@@ -450,68 +470,4 @@ def main():
                     )
 
                     if st.session_state.edit_mode and st.session_state.edit_sheet == selected_view_sheet:
-                        st.subheader(f"Chỉnh sửa bản ghi dòng {st.session_state.edit_row_idx + 2}")
-                        required_columns, optional_columns = get_columns(sh, selected_view_sheet)
-                        with st.form(f"edit_form_{selected_view_sheet}_{st.session_state.edit_row_idx}"):
-                            edit_data = {}
-                            edit_row = next(row for idx, row in user_data if idx == st.session_state.edit_row_idx)
-                            for header in required_columns:
-                                clean_header = header.rstrip('*')
-                                st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
-                                edit_data[clean_header] = st.text_input(
-                                    "", 
-                                    value=edit_row.get(clean_header, ''), 
-                                    key=f"edit_{selected_view_sheet}_{clean_header}_{st.session_state.edit_row_idx}"
-                                )
-                            for header in optional_columns:
-                                clean_header = header.rstrip('*')
-                                edit_data[clean_header] = st.text_input(
-                                    f"{clean_header} (tùy chọn)", 
-                                    value=edit_row.get(clean_header, ''), 
-                                    key=f"edit_{selected_view_sheet}_{clean_header}_{st.session_state.edit_row_idx}"
-                                )
-                            submit_edit = st.form_submit_button("Cập nhật")
-                            cancel_edit = st.form_submit_button("Hủy")
-
-                            if submit_edit:
-                                missing_required = [header.rstrip('*') for header in required_columns if not edit_data.get(header.rstrip('*'))]
-                                if missing_required:
-                                    st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
-                                else:
-                                    if update_data_in_sheet(sh, selected_view_sheet, st.session_state.edit_row_idx, edit_data, st.session_state.username):
-                                        st.success("🎉 Bản ghi đã được cập nhật thành công!")
-                                        st.session_state.edit_mode = False
-                                        st.session_state.edit_row_idx = None
-                                        st.session_state.edit_sheet = None
-                                        st.rerun()
-                                    else:
-                                        st.error("Lỗi khi cập nhật dữ liệu. Vui lòng thử lại.")
-                            if cancel_edit:
-                                st.session_state.edit_mode = False
-                                st.session_state.edit_row_idx = None
-                                st.session_state.edit_sheet = None
-                                st.rerun()
-                else:
-                    st.info("Không có dữ liệu nào được nhập trong khoảng thời gian hoặc từ khóa này.")
-
-        if st.session_state.selected_function in ["all", "Tìm kiếm"] and not st.session_state.force_change_password:
-            # Tìm kiếm
-            st.subheader("🔍 Tìm kiếm")
-            lookup_sheets = get_lookup_sheets(sh)
-            if not lookup_sheets:
-                st.error("Không tìm thấy sheet tra cứu hợp lệ.")
-            else:
-                selected_lookup_sheet = st.selectbox("Chọn sheet để tìm kiếm", lookup_sheets, key="lookup_sheet")
-                headers = [h.rstrip('*') for h in get_columns(sh, selected_lookup_sheet)[0]] + get_columns(sh, selected_lookup_sheet)[1]
-                search_column = st.selectbox("Chọn cột để tìm kiếm", ["Tất cả"] + headers, key="search_column")
-                keyword = st.text_input("Nhập từ khóa tìm kiếm", key="search_keyword")
-                if st.button("Tìm kiếm", key="search_button"):
-                    headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
-                    if headers and search_results:
-                        df = pd.DataFrame(search_results)
-                        st.dataframe(df)
-                    else:
-                        st.info("Không tìm thấy kết quả nào khớp với từ khóa.")
-
-if __name__ == "__main__":
-    main()
+                        st.subheader(f"Chỉnh sửa bản ghi dòng {st

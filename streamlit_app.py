@@ -28,21 +28,22 @@ def connect_to_gsheets():
 
 # --- Kiểm tra xem chuỗi đã mã hóa SHA256 chưa ---
 def is_hashed(pw):
-    return pw and len(pw) == 64 and re.fullmatch(r'[0-9a-fA-F]+', pw)
+    # Kiểm tra nếu pw là chuỗi và có định dạng SHA256
+    return isinstance(pw, str) and len(pw) == 64 and re.fullmatch(r'[0-9a-fA-F]+', pw)
 
 # --- Hàm mã hóa mật khẩu ---
 def hash_password(password):
-    return hashlib.sha256(password.encode('utf-8')).hexdigest() if password else ''
+    return hashlib.sha256(str(password).encode('utf-8')).hexdigest() if password else ''
 
 # --- Kiểm tra độ mạnh mật khẩu ---
 def is_strong_password(password):
-    if len(password) < 8:
+    if len(str(password)) < 8:
         return False, "Mật khẩu phải dài ít nhất 8 ký tự."
-    if not re.search(r'[A-Z]', password):
+    if not re.search(r'[A-Z]', str(password)):
         return False, "Mật khẩu phải chứa ít nhất một chữ cái in hoa."
-    if not re.search(r'[0-9]', password):
+    if not re.search(r'[0-9]', str(password)):
         return False, "Mật khẩu phải chứa ít nhất một số."
-    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', str(password)):
         return False, "Mật khẩu phải chứa ít nhất một ký tự đặc biệt."
     return True, ""
 
@@ -55,9 +56,11 @@ def get_users(sh):
 
         for idx, user in enumerate(data):
             pw = user.get('Password', '')
-            if not pw:
+            if not pw:  # Bỏ qua nếu ô Password trống
                 continue
 
+            # Chuyển đổi pw thành chuỗi nếu nó không phải chuỗi
+            pw = str(pw)
             if not is_hashed(pw):
                 hashed = hash_password(pw)
                 worksheet.update_cell(idx + 2, 2, hashed)

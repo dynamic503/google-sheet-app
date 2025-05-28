@@ -140,7 +140,7 @@ def add_data_to_sheet(sh, sheet_name, data, username):
 # --- Lấy dữ liệu đã nhập theo username ---
 def get_user_data(sh, sheet_name, username):
     try:
-        worksheet = sh.worksheet(sheet_name")
+        worksheet = sh.worksheet(sheet_name)
         data = worksheet.get_all_records()
         headers = worksheet.row_values(1)
         filtered_data = [row for row in data if row.get("Nguoi nhap") == username]
@@ -177,7 +177,7 @@ def main():
 
     # Kiểm tra khóa tài khoản
     if st.session_state.lockout_time > time.time():
-        st.error(f"Tái khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
+        st.error(f"Tài khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
         return
 
     if not st.session_state.login:
@@ -189,7 +189,7 @@ def main():
 
             if submit:
                 if st.session_state.login_attempts >= 5:
-                    st.session_state.lockout_time = time.time() + 360
+                    st.session_state.lockout_time = time.time() + 300
                     st.error("Quá nhiều lần thử đăng nhập. Tài khoản bị khóa trong 5 phút.")
                     return
 
@@ -209,12 +209,11 @@ def main():
                 else:
                     st.session_state.login_attempts += 1
                     st.error(f"Sai tên đăng nhập hoặc mật khẩu. Còn {5 - st.session_state.login_attempts} lần thử.")
-
     else:
         # Giao diện sau khi đăng nhập
         st.write(f"👋 Xin chào **{st.session_state.username}**! Quyền: **{st.session_state.role}**")
 
-        # Form đổi mật khẩu nếu cần)
+        # Form đổi mật khẩu (nếu cần)
         if st.session_state.show_change_password:
             st.subheader("🔒 Đổi mật khẩu")
             with st.form("change_password_form"):
@@ -233,7 +232,7 @@ def main():
                         if not is_valid:
                             st.error(msg)
                         else:
-                            if change_password(sh, st.session_state.username,, old_password, new_password):
+                            if change_password(sh, st.session_state.username, old_password, new_password):
                                 st.success("🎉 Đổi mật khẩu thành công! Vui lòng đăng nhập lại.")
                                 st.session_state.login = False
                                 st.session_state.username = ''

@@ -1,12 +1,12 @@
-
 import streamlit as st
 import hashlib
 import re
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
+import json
 
-# --- Cấu hình kết nối Google Sheets ---
+# --- Kết nối Google Sheets ---
 def connect_to_gsheets():
     scope = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
@@ -15,32 +15,37 @@ def connect_to_gsheets():
         st.error("Bạn chưa cấu hình biến môi trường GOOGLE_CREDENTIALS_JSON hoặc SHEET_ID")
         st.stop()
 
-    import json
     creds_dict = json.loads(creds_json)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     sh = client.open_by_key(sheet_id)
     return sh
 
-# --- Kiểm tra mật khẩu đã hash chưa ---
+# --- Kiểm tra chuỗi đã hash chưa ---
 def is_hashed(pw):
+    if not isinstance(pw, str):
+        return False
     return len(pw) == 64 and re.fullmatch(r'[0-9a-f]+', pw)
 
 # --- Hash mật khẩu ---
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# --- Lấy user, tự động cập nhật hash password ---
+# --- Lấy user và cập nhật hash nếu cần ---
 def get_users(sh):
-    worksheet = sh.worksheet("User")
-    data = worksheet.get_all_records()
+    try:
+        worksheet = sh.worksheet("User")
+    except gspread.exceptions.WorksheetNotFound:
+        st.error("Không tìm thấy sheet 'User' trong Google Sheets.")
+        st.stop()
 
+    data = worksheet.get_all_records()
     updated = False
     for idx, user in enumerate(data):
         pw = user['Password']
         if not is_hashed(pw):
             hashed = hash_password(pw)
-            worksheet.update_cell(idx + 2, 2, hashed)  # dòng idx+2, cột 2 (Password)
+            worksheet.update_cell(idx + 2, 2, hashed)  # dòng idx+2, cột 2
             user['Password'] = hashed
             updated = True
     if updated:

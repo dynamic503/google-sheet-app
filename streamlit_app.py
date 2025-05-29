@@ -6,11 +6,12 @@ from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
+import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-import logging
+from datetime import timedelta
 
 # --- Cấu hình logging ---
 logging.basicConfig(filename='app.log', level=logging.INFO)
@@ -318,11 +319,15 @@ def get_columns(sh, sheet_name):
             headers = worksheet.row_values(1)
             required_columns = [h for h in headers if h.endswith('*')]
             optional_columns = [h for h in headers if not h.endswith('*') and h not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
-            st.session_state[cache_key] = [required_columns, optional_columns]
+            st.session_state[cache_key] = (required_columns, optional_columns)
             st.session_state[f"{cache_key}_timestamp"] = time.time()
+        except gspread.exceptions.APIError as e:
+            if e.response.status_code == 429:
+                st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+            raise
         except Exception as e:
             st.error(f"Lỗi khi lấy tiêu đề cột: {e}")
-            logger.error(f"Error fetching columns for {sheet_name}: {str(e)}")
+            logger.error(f"Lỗi khi lấy tiêu đề cột: {e}")
             return [], []
     return st.session_state[cache_key]
 
@@ -345,11 +350,11 @@ def ensure_columns(sh, sheet_name):
         return headers
     except gspread.exceptions.APIError as e:
         if e.response.status_code == 429:
-            st.warning("Hệ thống đang bận, vui lòng thử lại sau vài giây.")
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
         raise
     except Exception as e:
-        st.error(f"Lỗi khi kiểm tra/thêm cột trong {sheet_name}: {e}")
-        logger.error(f"Lỗi khi kiểm tra/thêm cột trong {sheet_name}: {e}")
+        st.error(f"Lỗi khi kiểm tra/thêm cột: {e}")
+        logger.error(f"Lỗi khi kiểm tra/thêm cột: {e}")
         return []
 
 # --- Thêm dữ liệu vào sheet ---
@@ -373,11 +378,11 @@ def add_data_to_sheet(sh, sheet_name, data, username):
         return True
     except gspread.exceptions.APIError as e:
         if e.response.status_code == 429:
-            st.warning("Hệ thống đang bận, vui lòng thử lại sau vài giây.")
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
         raise
     except Exception as e:
-        st.error(f"Lỗi khi nhập liệu vào {sheet_name}: {e}")
-        logger.error(f"Lỗi khi nhập liệu vào {sheet_name}: {e}")
+        st.error(f"Lỗi khi nhập liệu: {e}")
+        logger.error(f"Lỗi khi nhập liệu: {e}")
         return False
 
 # --- Cập nhật bản ghi trong sheet ---
@@ -401,11 +406,11 @@ def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
         return True
     except gspread.exceptions.APIError as e:
         if e.response.status_code == 429:
-            st.warning("Hệ thống đang bận, vui lòng thử lại sau vài giây.")
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
         raise
     except Exception as e:
-        st.error(f"Lỗi khi cập nhật dữ liệu trong {sheet_name}: {e}")
-        logger.error(f"Lỗi khi cập nhật dữ liệu trong {sheet_name}: {e}")
+        st.error(f"Lỗi khi cập nhật dữ liệu: {e}")
+        logger.error(f"Lỗi khi cập nhật dữ liệu: {e}")
         return False
 
 # --- Lấy dữ liệu đã nhập, hỗ trợ admin thấy tất cả ---
@@ -419,12 +424,12 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
 
         if cache_key not in st.session_state or row_count > cached_row_count:
             @retry(
-                retry=retry_if_exception_type(gspread.exceptions.APIError),
                 stop=stop_after_attempt(3),
-                wait=wait_exponential(multiplier=1, min=2, max=10)
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                retry=retry_if_exception_type(gspread.exceptions.APIError)
             )
             def fetch_data():
-                data = worksheet.get_all_records())
+                data = worksheet.get_all_records()  # Sửa lỗi: xóa dấu ) thừa
                 headers = worksheet.row_values(1)
                 return headers, data
 
@@ -447,18 +452,19 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
             st.session_state[cache_key] = (headers, filtered_data)
             st.session_state[f"{cache_key}_row_count"] = row_count
         return st.session_state[cache_key]
-    except Exception as e:
-        if isinstance(e, gspread.exceptions.APIError) and e.response.status_code == 429:
-            st.warning("Hệ thống đang bận, vui lòng thử lại sau vài giây.")
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
         raise
-        st.error(f"Lỗi khi lấy dữ liệu đã nhập từ {sheet_name}: {e}")
-        logger.error(f"Error retrieving data from {sheet_name}: {e}")
+    except Exception as e:
+        st.error(f"Lỗi khi lấy dữ liệu đã nhập: {e}")
+        logger.error(f"Lỗi khi lấy dữ liệu đã nhập: {e}")
         return [], []
 
 # --- Tìm kiếm trong sheet ---
 def search_in_sheet(sh, sheet_name, keyword, column=None):
     cache_key = f"search_{sheet_name}_{keyword}_{column}"
-    if cache_key in st.session_state or st.session_state.get(f"{cache_key}_timestamp", time.time() - 60):
+    if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
             worksheet = sh.worksheet(sheet_name)
             data = worksheet.get_all_records()
@@ -474,40 +480,41 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
                     filtered_data = [row for row in data if keyword in str(row.get(clean_column, '')).lower()]
                 st.session_state[cache_key] = (headers, filtered_data)
             st.session_state[f"{cache_key}_timestamp"] = time.time()
+        except gspread.exceptions.APIError as e:
+            if e.response.status_code == 429:
+                st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+            raise
         except Exception as e:
-            if isinstance(e, gspread.exceptions.APIError) and e.response.status_code == 429:
-                st.warning("Hệ thống đang bận, vui lòng thử lại sau vài giây.")
-                raise
-            st.error(f"Lỗi khi tìm kiếm trong {sheet_name}: {e}")
-            logger.error(f"Error searching in sheet {sheet_name}: {e}")
+            st.error(f"Lỗi khi tìm kiếm dữ liệu: {e}")
+            logger.error(f"Lỗi khi tìm kiếm dữ liệu: {e}")
             return [], []
     return st.session_state[cache_key]
 
 # --- Giao diện chính ---
 def main():
     # Khởi tạo session state
-    if 'login' in st.session_state:
+    if 'login' not in st.session_state:
         st.session_state.login = False
-    if 'username' in st.session_state:
+    if 'username' not in st.session_state:
         st.session_state.username = ''
-    if 'role' in st.session_state:
+    if 'role' not in st.session_state:
         st.session_state.role = ''
-    if 'login_attempts' in st.session_state:
-        st.session_state.login_attempts'] = 0
-    if 'lockout_time' in st.session_state:
+    if 'login_attempts' not in st.session_state:
+        st.session_state.login_attempts = 0
+    if 'lockout_time' not in st.session_state:
         st.session_state.lockout_time = 0
-    if 'show_change_password' in st.session_state:
+    if 'show_change_password' not in st.session_state:
         st.session_state.show_change_password = False
-    if 'force_change_password' in st.session_state:
+    if 'force_change_password' not in st.session_state:
         st.session_state.force_change_password = False
-    if 'edit_mode' in st.session_state:
+    if 'edit_mode' not in st.session_state:
         st.session_state.edit_mode = False
-    if 'edit_row_idx' in st.session_state:
+    if 'edit_row_idx' not in st.session_state:
         st.session_state.edit_row_idx = None
-    if 'edit_sheet' in st.session_state:
+    if 'edit_sheet' not in st.session_state:
         st.session_state.edit_sheet = None
-    if 'selected_function' in st.session_state:
-        st.session_state.selected_function = 'Nhập liệu'
+    if 'selected_function' not in st.session_state:
+        st.session_state.selected_function = "Nhập liệu"
 
     # Kết nối Google Sheets
     sh = connect_to_gsheets()
@@ -700,7 +707,7 @@ def main():
                     if headers and user_data:
                         # Chuẩn bị dữ liệu cho ag-Grid
                         df = pd.DataFrame([row for _, row in user_data])
-                        df.insert(0, 'row_idx', [row_idx for idx, row in user_data])
+                        df.insert(0, 'row_idx', [row_idx for row_idx, _ in user_data])
                         df['sheet'] = selected_view_sheet
 
                         # Làm sạch dữ liệu
@@ -715,7 +722,7 @@ def main():
                             width=100,
                             cellRenderer=JsCode("""
                                 function(params) {
-                                    return '<button class="edit-button" onclick="Streamlit.setComponentValue({row_idx: ' + params.data.row_idx + ', sheet: ' + params.data.sheet + '\'})">Sửa</button>';
+                                    return '<button class="edit-button" onclick="Streamlit.setComponentValue({row_idx: ' + params.data.row_idx + ', sheet: \\'' + params.data.sheet + '\\'})">Sửa</button>';
                                 }
                             """)
                         )
@@ -785,7 +792,7 @@ def main():
                                         st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                                     else:
                                         if update_data_in_sheet(sh, selected_view_sheet, st.session_state.edit_row_idx, edit_data, st.session_state.username):
-                                            st.success("✅ Bản ghi đã được cập nhật thành công!")
+                                            st.success("🎉 Bản ghi đã được cập nhật thành công!")
                                             st.session_state.edit_mode = False
                                             st.session_state.edit_row_idx = None
                                             st.session_state.edit_sheet = None

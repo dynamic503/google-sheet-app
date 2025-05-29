@@ -8,6 +8,7 @@ import json
 import time
 from datetime import datetime, timedelta
 import pandas as pd
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # --- Đặt cấu hình trang đầu tiên ---
 st.set_page_config(page_title="Quản lý nhập liệu - Agribank", page_icon="💻")
@@ -70,6 +71,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Kết nối Google Sheets ---
+@st.cache_resource
 def connect_to_gsheets():
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -89,6 +91,12 @@ def connect_to_gsheets():
         return None
 
 # --- Đọc cấu hình từ sheet Config ---
+@st.cache_data(ttl=300)  # Cache 5 phút
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
+)
 def get_sheet_config(sh):
     try:
         worksheet = sh.worksheet("Config")
@@ -98,13 +106,18 @@ def get_sheet_config(sh):
             return []
         return data
     except gspread.exceptions.WorksheetNotFound:
-        st.error("Không tìm thấy sheet 'Config' trong Google Sheets. Vui lòng tạo sheet 'Config' với các cột: Sheetname, Tìm kiếm, Nhập, Xem đã nhập.")
+        st.error("Không tìm thấy sheet 'Config'. Vui lòng tạo sheet 'Config' với các cột: Sheetname, Tìm kiếm, Nhập, Xem đã nhập.")
         return []
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi đọc sheet Config: {e}")
         return []
 
 # --- Lấy danh sách sheet nhập liệu từ Config ---
+@st.cache_data(ttl=300)
 def get_input_sheets(sh):
     try:
         config = get_sheet_config(sh)
@@ -121,6 +134,7 @@ def get_input_sheets(sh):
         return []
 
 # --- Lấy danh sách sheet tra cứu từ Config ---
+@st.cache_data(ttl=300)
 def get_lookup_sheets(sh):
     try:
         config = get_sheet_config(sh)
@@ -137,6 +151,7 @@ def get_lookup_sheets(sh):
         return []
 
 # --- Lấy danh sách sheet xem đã nhập từ Config ---
+@st.cache_data(ttl=300)
 def get_view_sheets(sh):
     try:
         config = get_sheet_config(sh)
@@ -173,11 +188,21 @@ def is_strong_password(password):
     return True, ""
 
 # --- Lấy danh sách người dùng từ sheet "User" ---
+@st.cache_data(ttl=300)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
+)
 def get_users(sh):
     try:
         worksheet = sh.worksheet("User")
         data = worksheet.get_all_records()
         return data
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi lấy dữ liệu người dùng: {e}")
         return []
@@ -199,6 +224,11 @@ def check_login(sh, username, password):
     return None, False
 
 # --- Đổi mật khẩu ---
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
+)
 def change_password(sh, username, old_pw, new_pw):
     try:
         worksheet = sh.worksheet("User")
@@ -212,11 +242,21 @@ def change_password(sh, username, old_pw, new_pw):
                 worksheet.update_cell(idx + 2, 2, hashed_new)
                 return True
         return False
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi đổi mật khẩu: {e}")
         return False
 
 # --- Lấy tiêu đề cột từ sheet, tách cột bắt buộc (*) ---
+@st.cache_data(ttl=300)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
+)
 def get_columns(sh, sheet_name):
     try:
         worksheet = sh.worksheet(sheet_name)
@@ -224,11 +264,20 @@ def get_columns(sh, sheet_name):
         required_columns = [h for h in headers if h.endswith('*')]
         optional_columns = [h for h in headers if not h.endswith('*') and h not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
         return required_columns, optional_columns
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi lấy tiêu đề cột: {e}")
         return [], []
 
 # --- Kiểm tra và thêm cột Nguoi_nhap, Thoi_gian_nhap nếu chưa có ---
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
+)
 def ensure_columns(sh, sheet_name):
     try:
         worksheet = sh.worksheet(sheet_name)
@@ -240,11 +289,20 @@ def ensure_columns(sh, sheet_name):
             headers.append("Thoi_gian_nhap")
             worksheet.update_cell(1, len(headers), "Thoi_gian_nhap")
         return headers
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi kiểm tra/thêm cột: {e}")
         return []
 
 # --- Thêm dữ liệu vào sheet ---
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
+)
 def add_data_to_sheet(sh, sheet_name, data, username):
     try:
         worksheet = sh.worksheet(sheet_name)
@@ -254,11 +312,20 @@ def add_data_to_sheet(sh, sheet_name, data, username):
         row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         worksheet.append_row(row_data)
         return True
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi nhập liệu: {e}")
         return False
 
 # --- Cập nhật bản ghi trong sheet ---
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
+)
 def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
     try:
         worksheet = sh.worksheet(sheet_name)
@@ -268,6 +335,10 @@ def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
         row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         worksheet.update(f"A{row_idx + 2}:{chr(65 + len(headers) - 1)}{row_idx + 2}", [row_data])
         return True
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi cập nhật dữ liệu: {e}")
         return False
@@ -275,30 +346,53 @@ def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
 # --- Lấy dữ liệu đã nhập, hỗ trợ admin thấy tất cả ---
 def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None, keyword=None):
     try:
-        worksheet = sh.worksheet(sheet_name)
-        data = worksheet.get_all_records()
-        headers = worksheet.row_values(1)
-        filtered_data = []
-        for idx, row in enumerate(data):
-            if role.lower() == 'admin' or row.get("Nguoi_nhap") == username:
-                if start_date and end_date:
-                    try:
-                        entry_time = datetime.strptime(row.get("Thoi_gian_nhap", ""), "%Y-%m-%d %H:%M:%S")
-                        if not (start_date <= entry_time.date() <= end_date):
+        # Tạo khóa cache dựa trên tham số
+        cache_key = f"{sheet_name}_{username}_{role}_{start_date}_{end_date}_{keyword}"
+        if cache_key not in st.session_state:
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                retry=retry_if_exception_type(gspread.exceptions.APIError)
+            )
+            def fetch_data():
+                worksheet = sh.worksheet(sheet_name)
+                data = worksheet.get_all_records()
+                headers = worksheet.row_values(1)
+                return headers, data
+
+            headers, data = fetch_data()
+            filtered_data = []
+            for idx, row in enumerate(data):
+                if role.lower() == 'admin' or row.get("Nguoi_nhap") == username:
+                    if start_date and end_date:
+                        try:
+                            entry_time = datetime.strptime(row.get("Thoi_gian_nhap", ""), "%Y-%m-%d %H:%M:%S")
+                            if not (start_date <= entry_time.date() <= end_date):
+                                continue
+                        except ValueError:
                             continue
-                    except ValueError:
-                        continue
-                if keyword:
-                    keyword = keyword.lower()
-                    if not any(keyword in str(value).lower() for value in row.values()):
-                        continue
-                filtered_data.append((idx, row))
-        return headers, filtered_data
+                    if keyword:
+                        keyword = keyword.lower()
+                        if not any(keyword in str(value).lower() for value in row.values()):
+                            continue
+                    filtered_data.append((idx, row))
+            st.session_state[cache_key] = (headers, filtered_data)
+        return st.session_state[cache_key]
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi lấy dữ liệu đã nhập: {e}")
         return [], []
 
 # --- Tìm kiếm trong sheet ---
+@st.cache_data(ttl=300)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
+)
 def search_in_sheet(sh, sheet_name, keyword, column=None):
     try:
         worksheet = sh.worksheet(sheet_name)
@@ -313,6 +407,10 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
             clean_column = column.rstrip('*')
             filtered_data = [row for row in data if keyword in str(row.get(clean_column, '')).lower()]
         return headers, filtered_data
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi tìm kiếm dữ liệu: {e}")
         return [], []
@@ -341,7 +439,7 @@ def main():
     if 'edit_sheet' not in st.session_state:
         st.session_state.edit_sheet = None
     if 'selected_function' not in st.session_state:
-        st.session_state.selected_function = "Nhập liệu"  # Mặc định chọn menu đầu tiên
+        st.session_state.selected_function = "Nhập liệu"
 
     # Kết nối Google Sheets
     sh = connect_to_gsheets()
@@ -548,6 +646,10 @@ def main():
                                         st.session_state.edit_mode = False
                                         st.session_state.edit_row_idx = None
                                         st.session_state.edit_sheet = None
+                                        # Xóa cache để làm mới dữ liệu
+                                        cache_key = f"{selected_view_sheet}_{st.session_state.username}_{st.session_state.role}_{start_date}_{end_date}_{search_keyword}"
+                                        if cache_key in st.session_state:
+                                            del st.session_state[cache_key]
                                         st.rerun()
                                     else:
                                         st.error("Lỗi khi cập nhật dữ liệu. Vui lòng thử lại.")

@@ -6,12 +6,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-from datetime import timedelta
 
 # --- Cấu hình logging ---
 logging.basicConfig(filename='app.log', level=logging.INFO)
@@ -75,6 +74,10 @@ st.markdown("""
     .edit-button:hover {
         background-color: #8B1623;
     }
+    /* Cải thiện hiển thị bảng trên mobile */
+    .ag-root-wrapper {
+        max-height: 80vh !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -104,13 +107,9 @@ def clean_dataframe(df):
     """Làm sạch DataFrame để tương thích với pyarrow."""
     for col in df.columns:
         try:
-            # Chuyển tất cả giá trị thành chuỗi
             df[col] = df[col].astype(str).str.strip()
-            # Thay thế giá trị không hợp lệ
             df[col] = df[col].replace(['', ' ', '.', '   ', '<NA>'], pd.NA)
-            # Thay thế NA bằng chuỗi trống
             df[col] = df[col].fillna('')
-            # Loại bỏ ký tự không in được
             df[col] = df[col].apply(lambda x: ''.join(c for c in x if c.isprintable()))
             if df[col].str.contains(r'[^\x00-\x7F]').any():
                 logger.warning(f"Non-ASCII characters found in column {col}: {df[col].unique()}")
@@ -123,12 +122,10 @@ def validate_input(value, field_name):
     """Kiểm tra chuỗi nhập liệu."""
     if not value:
         return False, f"Trường {field_name} không được để trống."
-    # Loại bỏ ký tự không in được
     cleaned_value = ''.join(c for c in value if c.isprintable())
     if cleaned_value != value:
         logger.warning(f"Ký tự không hợp lệ trong {field_name}: {value}")
         return False, f"Trường {field_name} chứa ký tự không hợp lệ."
-    # Kiểm tra khoảng trắng
     if value.strip() == '':
         return False, f"Trường {field_name} chỉ chứa khoảng trắng."
     return True, cleaned_value
@@ -277,9 +274,9 @@ def check_login(sh, username, password):
         stored_password = str(user.get('Password', ''))
         if user.get('Username') == username:
             if stored_password == password:
-                return user.get('Role', 'User'), True  # True: bắt buộc đổi mật khẩu
+                return user.get('Role', 'User'), True
             if stored_password == hashed_input:
-                return user.get('Role', 'User'), False  # False: không cần đổi
+                return user.get('Role', 'User'), False
     return None, False
 
 # --- Đổi mật khẩu ---
@@ -371,7 +368,6 @@ def add_data_to_sheet(sh, sheet_name, data, username):
         row_data.append(username)
         row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         worksheet.append_row(row_data)
-        # Xóa cache cho sheet này
         for key in list(st.session_state.keys()):
             if key.startswith(f"{sheet_name}_"):
                 del st.session_state[key]
@@ -399,7 +395,6 @@ def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
         row_data.append(username)
         row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         worksheet.update(f"A{row_idx + 2}:{chr(65 + len(headers) - 1)}{row_idx + 2}", [row_data])
-        # Xóa cache cho sheet này
         for key in list(st.session_state.keys()):
             if key.startswith(f"{sheet_name}_"):
                 del st.session_state[key]
@@ -417,7 +412,6 @@ def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
 def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None, keyword=None):
     try:
         cache_key = f"{sheet_name}_{username}_{role}_{start_date}_{end_date}_{keyword}"
-        # Kiểm tra số lượng hàng để bỏ cache nếu có dữ liệu mới
         worksheet = sh.worksheet(sheet_name)
         row_count = len(worksheet.get_all_records())
         cached_row_count = st.session_state.get(f"{cache_key}_row_count", 0)
@@ -429,7 +423,7 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
                 retry=retry_if_exception_type(gspread.exceptions.APIError)
             )
             def fetch_data():
-                data = worksheet.get_all_records()  # Sửa lỗi: xóa dấu ) thừa
+                data = worksheet.get_all_records()
                 headers = worksheet.row_values(1)
                 return headers, data
 
@@ -492,7 +486,6 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
 
 # --- Giao diện chính ---
 def main():
-    # Khởi tạo session state
     if 'login' not in st.session_state:
         st.session_state.login = False
     if 'username' not in st.session_state:
@@ -516,17 +509,14 @@ def main():
     if 'selected_function' not in st.session_state:
         st.session_state.selected_function = "Nhập liệu"
 
-    # Kết nối Google Sheets
     sh = connect_to_gsheets()
     if not sh:
         return
 
-    # Kiểm tra khóa tài khoản
     if st.session_state.lockout_time > time.time():
         st.error(f"Tài khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
         return
 
-    # Sidebar: Logo, chữ chi nhánh, và menu điều hướng
     st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=120)
     st.sidebar.markdown('<div class="branch-text">Chi nhánh tỉnh Quảng Trị</div>', unsafe_allow_html=True)
     st.sidebar.markdown("---")
@@ -542,7 +532,6 @@ def main():
     st.title("Ứng dụng quản lý nhập liệu - Agribank")
 
     if not st.session_state.login:
-        # Giao diện đăng nhập
         st.subheader("🔐 Đăng nhập")
         with st.form("login_form"):
             username = st.text_input("Tên đăng nhập", max_chars=50, key="login_username")
@@ -572,7 +561,6 @@ def main():
                     st.session_state.login_attempts += 1
                     st.error(f"Sai tên đăng nhập hoặc mật khẩu. Còn {5 - st.session_state.login_attempts} lần thử.")
     else:
-        # Giao diện sau khi đăng nhập
         st.write(f"👋 Xin chào **{st.session_state.username}**! Quyền: **{st.session_state.role}**")
 
         if st.session_state.selected_function == "Đăng xuất":
@@ -591,7 +579,6 @@ def main():
             st.rerun()
 
         if st.session_state.selected_function in ["all", "Đổi mật khẩu"] or st.session_state.force_change_password:
-            # Đổi mật khẩu
             st.subheader("🔒 Đổi mật khẩu")
             if st.session_state.show_change_password or not st.session_state.force_change_password:
                 with st.form("change_password_form"):
@@ -625,7 +612,6 @@ def main():
                                     st.error("Mật khẩu cũ không chính xác.")
 
         if st.session_state.selected_function in ["all", "Nhập liệu"] and not st.session_state.force_change_password:
-            # Nhập liệu
             st.subheader("📝 Nhập liệu")
             input_sheets = get_input_sheets(sh)
             if not input_sheets:
@@ -674,7 +660,6 @@ def main():
                                     st.error("Lỗi khi nhập dữ liệu. Vui lòng thử lại.")
 
         if st.session_state.selected_function in ["all", "Xem và sửa dữ liệu"] and not st.session_state.force_change_password:
-            # Xem và sửa dữ liệu đã nhập
             st.subheader("📊 Xem và sửa dữ liệu đã nhập")
             view_sheets = get_view_sheets(sh)
             if not view_sheets:
@@ -688,7 +673,6 @@ def main():
                     end_date = st.date_input("Đến ngày", value=datetime.now().date(), key="end_date")
                 search_keyword = st.text_input("Tìm kiếm bản ghi", key="view_search_keyword")
                 
-                # Nút áp dụng và làm mới
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     if st.button("Áp dụng bộ lọc", key="apply_filter"):
@@ -705,15 +689,12 @@ def main():
                         sh, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword
                     )
                     if headers and user_data:
-                        # Chuẩn bị dữ liệu cho ag-Grid
                         df = pd.DataFrame([row for _, row in user_data])
                         df.insert(0, 'row_idx', [row_idx for row_idx, _ in user_data])
                         df['sheet'] = selected_view_sheet
 
-                        # Làm sạch dữ liệu
                         df = clean_dataframe(df)
 
-                        # Cấu hình ag-Grid
                         gb = GridOptionsBuilder.from_dataframe(df)
                         gb.configure_column(
                             "Sửa",
@@ -729,27 +710,29 @@ def main():
                         gb.configure_column("row_idx", hide=True)
                         gb.configure_column("sheet", hide=True)
                         gb.configure_selection('single')
-                        gb.configure_grid_options(domLayout='normal')
+                        gb.configure_grid_options(
+                            domLayout='autoHeight',
+                            suppressHorizontalScroll=False,
+                            suppressColumnVirtualisation=False
+                        )
                         grid_options = gb.build()
 
-                        # Hiển thị bảng
                         grid_response = AgGrid(
                             df,
                             gridOptions=grid_options,
                             update_mode=GridUpdateMode.VALUE_CHANGED,
                             allow_unsafe_jscode=True,
-                            height=400,
+                            height=400 if len(df) < 10 else 600,  # Điều chỉnh chiều cao động
                             fit_columns_on_grid_load=True,
                             custom_css={"#gridToolBar": {"display": "none"}},
                         )
 
-                        # Xử lý sự kiện nhấn nút Sửa
                         if 'component_value' in grid_response and grid_response['component_value']:
                             st.session_state.edit_mode = True
                             st.session_state.edit_row_idx = grid_response['component_value']['row_idx']
                             st.session_state.edit_sheet = grid_response['component_value']['sheet']
+                            st.experimental_rerun()  # Tải lại để hiển thị form chỉnh sửa
 
-                        # Form chỉnh sửa
                         if st.session_state.edit_mode and st.session_state.edit_sheet == selected_view_sheet:
                             st.subheader(f"Chỉnh sửa bản ghi #{st.session_state.edit_row_idx + 2}")
                             required_columns, optional_columns = get_columns(sh, selected_view_sheet)
@@ -811,7 +794,6 @@ def main():
                         st.info("Không có dữ liệu nào được nhập trong khoảng thời gian hoặc từ khóa này.")
 
         if st.session_state.selected_function in ["all", "Tìm kiếm"] and not st.session_state.force_change_password:
-            # Tìm kiếm
             st.subheader("🔍 Tìm kiếm")
             lookup_sheets = get_lookup_sheets(sh)
             if not lookup_sheets:
@@ -825,7 +807,7 @@ def main():
                     headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
                     if headers and search_results:
                         df = pd.DataFrame(search_results)
-                        df = clean_dataframe(df)  # Làm sạch dữ liệu trước khi hiển thị
+                        df = clean_dataframe(df)
                         st.dataframe(df)
                     else:
                         st.info("Không tìm thấy kết quả nào khớp với từ khóa.")

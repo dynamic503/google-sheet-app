@@ -65,11 +65,18 @@ st.markdown("""
     .ag-root-wrapper {
         max-height: 70vh !important;
         overflow-x: auto !important;
+        overflow-y: auto !important;
     }
     @media (max-width: 600px) {
         .ag-root-wrapper {
             max-height: 50vh !important;
         }
+    }
+    /* Đảm bảo nội dung cột không bị cắt */
+    .ag-cell {
+        white-space: normal !important;
+        word-wrap: break-word !important;
+        max-height: none !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -103,7 +110,7 @@ def clean_dataframe(df):
             # Chuyển tất cả thành chuỗi
             df[col] = df[col].astype(str).str.strip()
             # Thay thế giá trị không hợp lệ
-            df[col] = df[col].replace(['', ' ', '.', '   ', '<NA>'], pd.NA)
+            df[col] = df[col].replace(['Err', 'Uhjr', '', ' ', '.', '   ', '<NA>'], pd.NA)
             df[col] = df[col].fillna('')
             # Loại bỏ ký tự không in được
             df[col] = df[col].apply(lambda x: ''.join(c for c in x if c.isprintable()))
@@ -699,8 +706,7 @@ def main():
 
                         gb = GridOptionsBuilder.from_dataframe(df)
                         for col in df.columns:
-                            if col not in ['Sửa', 'row_idx', 'sheet']:
-                                gb.configure_column(col, minWidth=150, autoSize=True)
+                            gb.configure_column(col, minWidth=150, autoSize=True, wrapText=True)
                         gb.configure_column("Sửa", pinned="left", width=150)
                         gb.configure_column("row_idx", hide=True)
                         gb.configure_column("sheet", hide=True)

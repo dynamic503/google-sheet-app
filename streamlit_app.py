@@ -743,11 +743,13 @@ def main():
 
                         # Lấy dữ liệu đã chỉnh sửa
                         updated_df = pd.DataFrame(grid_response['data'])
-                        if not updated_df.equals(df):
+                        if not updated_df.empty and not updated_df.equals(df):
                             for idx, row in updated_df.iterrows():
-                                original_row = df.iloc[idx]
-                                if not row.equals(original_row):
-                                    row_idx = row['row_idx']
+                                row_idx = row['row_idx']
+                                if pd.isna(row_idx) or not str(row_idx).isdigit():
+                                    continue  # Bỏ qua hàng không hợp lệ
+                                original_row = df[df['row_idx'] == row_idx].iloc[0] if row_idx in df['row_idx'].values else None
+                                if original_row is not None and not row.drop(['row_idx', 'sheet']).equals(original_row.drop(['row_idx', 'sheet'])):
                                     sheet_name = row['sheet']
                                     updated_data = row.drop(['row_idx', 'sheet']).to_dict()
                                     # Validate dữ liệu trước khi cập nhật
@@ -770,8 +772,8 @@ def main():
                                     if missing_required:
                                         st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                                     else:
-                                        if update_data_in_sheet(sh, sheet_name, row_idx, validated_data, st.session_state.username):
-                                            st.success(f"🎉 Bản ghi #{row_idx + 2} đã được cập nhật thành công!")
+                                        if update_data_in_sheet(sh, sheet_name, int(row_idx), validated_data, st.session_state.username):
+                                            st.success(f"🎉 Bản ghi #{int(row_idx) + 2} đã được cập nhật thành công!")
                                         else:
                                             st.error("Lỗi khi cập nhật dữ liệu. Vui lòng kiểm tra log và thử lại.")
                                             return

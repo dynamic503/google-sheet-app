@@ -77,6 +77,12 @@ st.markdown("""
         white-space: normal !important;
         word-wrap: break-word !important;
         max-height: none !important;
+        line-height: 1.5 !important;
+        padding: 5px !important;
+    }
+    .ag-header-cell {
+        white-space: normal !important;
+        word-wrap: break-word !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -102,9 +108,9 @@ def connect_to_gsheets():
         logger.error(f"Lỗi kết nối Google Sheets: {e}")
         return None
 
-# --- Làm sạch dữ liệu DataFrame ---
+# --- Làm sạch dữ liệu DataFrame với kiểm tra ký tự ---
 def clean_dataframe(df):
-    """Làm sạch DataFrame để tương thích với pyarrow và ag-Grid."""
+    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và log ký tự ẩn."""
     for col in df.columns:
         try:
             # Chuyển tất cả thành chuỗi
@@ -112,12 +118,16 @@ def clean_dataframe(df):
             # Thay thế giá trị không hợp lệ
             df[col] = df[col].replace(['Err', 'Uhjr', '', ' ', '.', '   ', '<NA>'], pd.NA)
             df[col] = df[col].fillna('')
-            # Loại bỏ ký tự không in được
-            df[col] = df[col].apply(lambda x: ''.join(c for c in x if c.isprintable()))
-            # Thay thế ký tự non-ASCII
-            df[col] = df[col].str.encode('ascii', 'ignore').str.decode('ascii')
-            if df[col].str.contains(r'[^\x00-\x7F]').any():
-                logger.warning(f"Non-ASCII characters found in column {col}: {df[col].unique()}")
+            # Lọc ký tự không in được và log chúng
+            original_values = df[col].copy()
+            df[col] = df[col].apply(lambda x: ''.join(c for c in x if c.isprintable() or ord(c) > 31))
+            # Log các ký tự bị loại bỏ
+            for idx, (orig, cleaned) in enumerate(zip(original_values, df[col])):
+                if orig != cleaned:
+                    diff_chars = ''.join(c for c in orig if c not in cleaned and ord(c) <= 31)
+                    if diff_chars:
+                        logger.warning(f"Row {idx}, Column {col}: Removed non-printable chars: {repr(diff_chars)}")
+            logger.info(f"DataFrame column {col} after cleaning: {df[col].head().to_list()}")
         except Exception as e:
             logger.error(f"Lỗi khi làm sạch cột {col}: {e}")
     logger.info(f"DataFrame cleaned: {df.head().to_dict()}")
@@ -689,6 +699,9 @@ def main():
                             if key.startswith(f"{selected_view_sheet}_"):
                                 del st.session_state[key]
                         st.session_state.filter_applied = True
+                with col3:
+                    if st.button("Hiển thị dữ liệu thô", key="show_raw_data"):
+                        st.session_state.show_raw_data = True
 
                 if 'filter_applied' in st.session_state and st.session_state.filter_applied:
                     headers, user_data = get_user_data(
@@ -701,19 +714,32 @@ def main():
 
                         df = clean_dataframe(df)
 
+                        # Hiển thị dữ liệu thô để debug
+                        if 'show_raw_data' in st.session_state and st.session_state.show_raw_data:
+                            st.subheader("Dữ liệu thô sau làm sạch")
+                            st.write(df)
+
                         # Thêm cột "Sửa" với kiểm tra giá trị row_idx
                         df['Sửa'] = df['row_idx'].apply(lambda x: f"Sửa bản ghi {int(x) + 2}" if pd.notna(x) and str(x).isdigit() else "Sửa bản ghi lỗi")
 
                         gb = GridOptionsBuilder.from_dataframe(df)
                         for col in df.columns:
-                            gb.configure_column(col, minWidth=150, autoSize=True, wrapText=True)
+                            if col not in ['Sửa', 'row_idx', 'sheet']:
+                                gb.configure_column(
+                                    col,
+                                    minWidth=200,
+                                    autoSize=True,
+                                    wrapText=True,
+                                    autoHeight=True
+                                )
                         gb.configure_column("Sửa", pinned="left", width=150)
                         gb.configure_column("row_idx", hide=True)
                         gb.configure_column("sheet", hide=True)
                         gb.configure_grid_options(
                             domLayout='autoHeight',
                             suppressHorizontalScroll=False,
-                            suppressColumnVirtualisation=False
+                            suppressColumnVirtualisation=False,
+                            autoSizeColumnsMode='fitCellContents'
                         )
                         grid_options = gb.build()
 

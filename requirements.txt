@@ -1,3 +1,6 @@
 streamlit
 gspread
 oauth2client
+pandas
+tenacity
+streamlit-aggrid

@@ -694,8 +694,8 @@ def main():
 
                         df = clean_dataframe(df)
 
-                        # Thêm cột "Sửa" bằng st.button
-                        df['Sửa'] = df['row_idx'].apply(lambda x: f"Sửa bản ghi {x+2}")
+                        # Thêm cột "Sửa" với kiểm tra giá trị row_idx
+                        df['Sửa'] = df['row_idx'].apply(lambda x: f"Sửa bản ghi {int(x) + 2}" if pd.notna(x) and str(x).isdigit() else "Sửa bản ghi lỗi")
 
                         gb = GridOptionsBuilder.from_dataframe(df)
                         for col in df.columns:
@@ -722,12 +722,15 @@ def main():
 
                         # Hiển thị nút "Sửa" bằng Streamlit
                         for idx, row in df.iterrows():
-                            if st.button(f"Sửa bản ghi {idx+2}", key=f"edit_button_{selected_view_sheet}_{idx}"):
-                                st.session_state.edit_mode = True
-                                st.session_state.edit_row_idx = idx
-                                st.session_state.edit_sheet = selected_view_sheet
-                                logger.info(f"Edit button clicked: row_idx={idx}, sheet={selected_view_sheet}")
-                                st.rerun()
+                            if pd.notna(row['row_idx']) and str(row['row_idx']).isdigit():
+                                if st.button(f"Sửa bản ghi {int(row['row_idx']) + 2}", key=f"edit_button_{selected_view_sheet}_{idx}"):
+                                    st.session_state.edit_mode = True
+                                    st.session_state.edit_row_idx = int(row['row_idx'])
+                                    st.session_state.edit_sheet = selected_view_sheet
+                                    logger.info(f"Edit button clicked: row_idx={row['row_idx']}, sheet={selected_view_sheet}")
+                                    st.rerun()
+                            else:
+                                st.warning(f"Bản ghi {idx} có row_idx không hợp lệ: {row['row_idx']}")
 
                         if st.session_state.edit_mode and st.session_state.edit_sheet == selected_view_sheet:
                             st.subheader(f"Chỉnh sửa bản ghi #{st.session_state.edit_row_idx + 2}")

@@ -366,7 +366,7 @@ def main():
     if st.sidebar.button("Hiển thị tất cả", key="show_all"):
         st.session_state.selected_function = "all"
 
-    st.title("Ứng dụng Quản lý Nhập liệu - Agribank")
+    st.title("Ứng dụng quản lý nhập liệu - Agribank")
 
     if not st.session_state.login:
         # Giao diện đăng nhập
@@ -419,12 +419,12 @@ def main():
 
         if st.session_state.selected_function in ["all", "Đổi mật khẩu"] or st.session_state.force_change_password:
             # Đổi mật khẩu
-            st.subheader("🔑 Đổi mật khẩu")
+            st.subheader("🔒 Đổi mật khẩu")
             if st.session_state.show_change_password or not st.session_state.force_change_password:
                 with st.form("change_password_form"):
-                    old_password = st.text_input("Mật khẩu", type="password", max_chars=50, key="old_password")
-                    new_password = st.text_input("Mật khẩu", type="password", max_chars=50, key="new_password")
-                    new_password2 = st.text_input("Nhập lại mật khẩu", type="password", max_chars=50, key="new_password2")
+                    old_password = st.text_input("Mật khẩu cũ", type="password", max_chars=50, key="old_password")
+                    new_password = st.text_input("Mật khẩu mới", type="password", max_chars=50, key="new_password")
+                    new_password2 = st.text_input("Nhập lại mật khẩu mới", type="password", max_chars=50, key="new_password2")
                     submit_change = st.form_submit_button("Cập nhật mật khẩu")
 
                     if submit_change:
@@ -441,7 +441,7 @@ def main():
                                     st.success("🎉 Đổi mật khẩu thành công! Vui lòng đăng nhập lại.")
                                     st.session_state.login = False
                                     st.session_state.username = ''
-                                    st.session_state.pass = ''
+                                    st.session_state.role = ''
                                     st.session_state.login_attempts = 0
                                     st.session_state.show_change_password = False
                                     st.session_state.force_change_password = False
@@ -458,125 +458,125 @@ def main():
             if not input_sheets:
                 st.error("Không tìm thấy sheet nhập liệu hợp lệ.")
             else:
-                selected_sheet = st.selectbox("Chọn sheet để nhập liệu", input_sheets, key="input_sheets")
-                required_columns, optional_columns = get_columns(sh, selected_sheets)
+                selected_sheet = st.selectbox("Chọn sheet để nhập liệu", input_sheets, key="input_sheet")
+                required_columns, optional_columns = get_columns(sh, selected_sheet)
                 if required_columns or optional_columns:
-                    with st.form("input_form_{selected_sheets}"):
+                    with st.form(f"input_form_{selected_sheet}"):
                         form_data = {}
                         for header in required_columns:
                             clean_header = header.rstrip('*')
-                            st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_html=True)
-                            form_data[clean_header] = st.text_input("", key=f"{selected_sheets}_{clean_header}_input")
+                            st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
+                            form_data[clean_header] = st.text_input("", key=f"{selected_sheet}_{clean_header}_input")
                         for header in optional_columns:
                             clean_header = header.rstrip('*')
-                            form_data[clean_header] = st.text_input(f"{clean_header} (tùy chọn tối đa)", key=f"{selected_sheets}_{clean_header}_input")
-                        submit_data = st.form_submit_button("Gửi dữ liệu")
+                            form_data[clean_header] = st.text_input(f"{clean_header} (tùy chọn)", key=f"{selected_sheet}_{clean_header}_input")
+                        submit_data = st.form_submit_button("Gửi")
 
                         if submit_data:
                             missing_required = [header.rstrip('*') for header in required_columns if not form_data.get(header.rstrip('*'))]
                             if missing_required:
                                 st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                             else:
-                                if add_data_to_sheet(sh, selected_sheets, form_data, st.session_state.username):
+                                if add_data_to_sheet(sh, selected_sheet, form_data, st.session_state.username):
                                     st.success("🎉 Dữ liệu đã được nhập thành công!")
                                 else:
                                     st.error("Lỗi khi nhập dữ liệu. Vui lòng thử lại.")
 
-                    if st.session_state.selected_function in ["all", "Xem và sửa dữ liệu"] and not st.session_state.force_change_password:
-                        # Xem và sửa dữ liệu đã nhập
-                        st.subheader("📊 Xem và sửa dữ liệu đã nhập")
-                        view_sheets = get_view_sheets(sh)
-                        if not view_sheets:
-                            st.error("Không tìm thấy sheet xem dữ liệu hợp lệ.")
-                        else:
-                            selected_view_sheet = st.selectbox("Chọn sheet để xem", view_sheets, key="view_sheet")
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                start_date = st.date_input("Từ ngày", value=datetime.now().date() - timedelta(days=30), key="start_date")
-                            with col2:
-                                end_date = st.date_input("Đến ngày", value=datetime.now().date(), key="end_date")
-                            search_keyword = st.text_input("Tìm kiếm bản ghi", key="view_search_keyword")
-                            
-                            headers, user_data = get_user_data(
-                                sh, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword
-                            )
-                            if headers and user_data:
-                                df = pd.DataFrame([row for _, row in user_data])
-                                # Hiển thị bảng
-                                st.dataframe(df, hide_index=True)
-                                
-                                # Thêm nút "Sửa" cho mỗi hàng
-                                st.markdown("### Chọn hàng để chỉnh sửa")
-                                for idx, (row_idx, row) in enumerate(user_data):
-                                    if st.button(f"Sửa hàng #{idx + 1}", key=f"edit_button_{row_idx}_{selected_view_sheet}", type="primary"):
-                                        st.session_state.edit_mode = True
-                                        st.session_state.edit_row_idx = row_idx
-                                        st.session_state.edit_sheet = selected_view_sheet
+        if st.session_state.selected_function in ["all", "Xem và sửa dữ liệu"] and not st.session_state.force_change_password:
+            # Xem và sửa dữ liệu đã nhập
+            st.subheader("📊 Xem và sửa dữ liệu đã nhập")
+            view_sheets = get_view_sheets(sh)
+            if not view_sheets:
+                st.error("Không tìm thấy sheet xem dữ liệu hợp lệ.")
+            else:
+                selected_view_sheet = st.selectbox("Chọn sheet để xem", view_sheets, key="view_sheet")
+                col1, col2 = st.columns(2)
+                with col1:
+                    start_date = st.date_input("Từ ngày", value=datetime.now().date() - timedelta(days=30), key="start_date")
+                with col2:
+                    end_date = st.date_input("Đến ngày", value=datetime.now().date(), key="end_date")
+                search_keyword = st.text_input("Tìm kiếm bản ghi", key="view_search_keyword")
+                
+                headers, user_data = get_user_data(
+                    sh, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword
+                )
+                if headers and user_data:
+                    df = pd.DataFrame([row for _, row in user_data])
+                    # Hiển thị bảng
+                    st.dataframe(df, hide_index=True)
+                    
+                    # Thêm nút "Sửa" cho mỗi hàng
+                    st.markdown("### Chọn hàng để chỉnh sửa")
+                    for idx, (row_idx, row) in enumerate(user_data):
+                        if st.button(f"Sửa hàng #{idx + 1}", key=f"edit_button_{row_idx}_{selected_view_sheet}", type="primary"):
+                            st.session_state.edit_mode = True
+                            st.session_state.edit_row_idx = row_idx
+                            st.session_state.edit_sheet = selected_view_sheet
 
-                                # Form chỉnh sửa
-                                if st.session_state.edit_mode and st.session_state.edit_sheet == selected_view_sheet:
-                                    st.subheader(f"Chỉnh sửa bản ghi #{st.session_state.edit_row_idx + 2}")
-                                    required_columns, optional_columns = get_columns(sh, selected_view_sheet)
-                                    with st.form(f"edit_form_{selected_view_sheet}_{st.session_state.edit_row_idx}"):
-                                        edit_data = {}
-                                        edit_row = user_data[st.session_state.edit_row_idx][1]
-                                        for header in required_columns:
-                                            clean_header = header.rstrip('*')
-                                            st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
-                                            edit_data[clean_header] = st.text_input(
-                                                "", 
-                                                value=edit_row.get(clean_header, ''), 
-                                                key=f"edit_{selected_view_sheet}_{clean_header}_{st.session_state.edit_row_idx}"
-                                            )
-                                        for header in optional_columns:
-                                            clean_header = header.rstrip('*')
-                                            edit_data[clean_header] = st.text_input(
-                                                f"{clean_header}", 
-                                                value=edit_row.get(clean_header, ''), 
-                                                key=f"edit_{selected_view_sheet}_{clean_header}_{st.session_state.edit_row_idx}"
-                                            )
-                                        submit_edit = st.form_submit_button("Cập nhật")
-                                        cancel_edit = st.form_submit_button("Hủy")
+                    # Form chỉnh sửa
+                    if st.session_state.edit_mode and st.session_state.edit_sheet == selected_view_sheet:
+                        st.subheader(f"Chỉnh sửa bản ghi #{st.session_state.edit_row_idx + 2}")
+                        required_columns, optional_columns = get_columns(sh, selected_view_sheet)
+                        with st.form(f"edit_form_{selected_view_sheet}_{st.session_state.edit_row_idx}"):
+                            edit_data = {}
+                            edit_row = user_data[st.session_state.edit_row_idx][1]
+                            for header in required_columns:
+                                clean_header = header.rstrip('*')
+                                st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
+                                edit_data[clean_header] = st.text_input(
+                                    "", 
+                                    value=edit_row.get(clean_header, ''), 
+                                    key=f"edit_{selected_view_sheet}_{clean_header}_{st.session_state.edit_row_idx}"
+                                )
+                            for header in optional_columns:
+                                clean_header = header.rstrip('*')
+                                edit_data[clean_header] = st.text_input(
+                                    f"{clean_header} (tùy chọn)", 
+                                    value=edit_row.get(clean_header, ''), 
+                                    key=f"edit_{selected_view_sheet}_{clean_header}_{st.session_state.edit_row_idx}"
+                                )
+                            submit_edit = st.form_submit_button("Cập nhật")
+                            cancel_edit = st.form_submit_button("Hủy")
 
-                                        if submit_edit:
-                                            missing_required = [header.rstrip('*') for header in required_columns if not edit_data.get(header.rstrip('*'))]
-                                            if missing_required:
-                                                st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
-                                            else:
-                                                if update_data_in_sheet(sh, selected_view_sheet, st.session_state.edit_row_idx, edit_data, st.session_state.username):
-                                                    st.success("🎉 Bản ghi đã được cập nhật thành công!")
-                                                    st.session_state.edit_mode = False
-                                                    st.session_state.edit_row_idx = None
-                                                    st.session_state.edit_sheet = None
-                                                    st.rerun()
-                                                else:
-                                                    st.error("Lỗi khi cập nhật dữ liệu. Vui lòng thử lại.")
-                                        if cancel_edit:
-                                            st.session_state.edit_mode = False
-                                            st.session_state.edit_row_idx = None
-                                            st.session_state.edit_sheet = None
-                                            st.rerun()
-                            else:
-                                st.info("Không có dữ liệu nào được nhập trong khoảng thời gian hoặc từ khóa này.")
-
-                    if st.session_state.selected_function in ["all", "Tìm kiếm"] and not st.session_state.force_change_password:
-                        # Tìm kiếm
-                        st.subheader("🔍 Tìm kiếm")
-                        lookup_sheets = get_lookup_sheets(sh)
-                        if not lookup_sheets:
-                            st.error("Không tìm thấy sheet tra cứu hợp lệ.")
-                        else:
-                            selected_lookup_sheet = st.selectbox("Chọn sheet để tìm kiếm", lookup_sheets, key="lookup_sheet")
-                            headers = [h.rstrip('*') for h in get_columns(sh, selected_lookup_sheet)[0]] + get_columns(sh, selected_lookup_sheet)[1]
-                            search_column = st.selectbox("Chọn cột để tìm kiếm", ["Tất cả"] + headers, key="search_column")
-                            keyword = st.text_input("Nhập từ khóa tìm kiếm", key="search_keyword")
-                            if st.button("Tìm kiếm", key="search_button"):
-                                headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
-                                if headers and search_results:
-                                    df = pd.DataFrame(search_results)
-                                    st.dataframe(df)
+                            if submit_edit:
+                                missing_required = [header.rstrip('*') for header in required_columns if not edit_data.get(header.rstrip('*'))]
+                                if missing_required:
+                                    st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                                 else:
-                                    st.info("Không tìm thấy kết quả nào khớp với từ khóa.")
+                                    if update_data_in_sheet(sh, selected_view_sheet, st.session_state.edit_row_idx, edit_data, st.session_state.username):
+                                        st.success("🎉 Bản ghi đã được cập nhật thành công!")
+                                        st.session_state.edit_mode = False
+                                        st.session_state.edit_row_idx = None
+                                        st.session_state.edit_sheet = None
+                                        st.rerun()
+                                    else:
+                                        st.error("Lỗi khi cập nhật dữ liệu. Vui lòng thử lại.")
+                            if cancel_edit:
+                                st.session_state.edit_mode = False
+                                st.session_state.edit_row_idx = None
+                                st.session_state.edit_sheet = None
+                                st.rerun()
+                else:
+                    st.info("Không có dữ liệu nào được nhập trong khoảng thời gian hoặc từ khóa này.")
+
+        if st.session_state.selected_function in ["all", "Tìm kiếm"] and not st.session_state.force_change_password:
+            # Tìm kiếm
+            st.subheader("🔍 Tìm kiếm")
+            lookup_sheets = get_lookup_sheets(sh)
+            if not lookup_sheets:
+                st.error("Không tìm thấy sheet tra cứu hợp lệ.")
+            else:
+                selected_lookup_sheet = st.selectbox("Chọn sheet để tìm kiếm", lookup_sheets, key="lookup_sheet")
+                headers = [h.rstrip('*') for h in get_columns(sh, selected_lookup_sheet)[0]] + get_columns(sh, selected_lookup_sheet)[1]
+                search_column = st.selectbox("Chọn cột để tìm kiếm", ["Tất cả"] + headers, key="search_column")
+                keyword = st.text_input("Nhập từ khóa tìm kiếm", key="search_keyword")
+                if st.button("Tìm kiếm", key="search_button"):
+                    headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
+                    if headers and search_results:
+                        df = pd.DataFrame(search_results)
+                        st.dataframe(df)
+                    else:
+                        st.info("Không tìm thấy kết quả nào khớp với từ khóa.")
 
 if __name__ == "__main__":
     main()

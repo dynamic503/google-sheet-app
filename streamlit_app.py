@@ -612,7 +612,7 @@ def main():
                 selected_view_sheet = st.selectbox("Chọn sheet để xem", view_sheets, key="view_sheet")
                 col1, col2 = st.columns(2)
                 with col1:
-                    start_date = st.date_input("Từ ngày", value=datetime.now().date() - timedelta(days=30), key="start_date")
+                    start_date = st.date_input("Từ ngày", value=datetime.now().date() - timedelta(days=90), key="start_date")
                 with col2:
                     end_date = st.date_input("Đến ngày", value=datetime.now().date(), key="end_date")
                 search_keyword = st.text_input("Tìm kiếm bản ghi", key="view_search_keyword")
@@ -670,7 +670,7 @@ def main():
                         )
 
                         # Xử lý sự kiện nhấn nút Sửa
-                        if grid_response['component_value']:
+                        if 'component_value' in grid_response and grid_response['component_value']:
                             st.session_state.edit_mode = True
                             st.session_state.edit_row_idx = grid_response['component_value']['row_idx']
                             st.session_state.edit_sheet = selected_view_sheet

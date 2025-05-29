@@ -92,6 +92,16 @@ def connect_to_gsheets():
         st.error(f"Lỗi kết nối Google Sheets: {e}")
         return None
 
+# --- Làm sạch dữ liệu DataFrame ---
+def clean_dataframe(df):
+    """Làm sạch DataFrame để tương thích với pyarrow."""
+    for col in df.columns:
+        # Chuyển tất cả giá trị thành chuỗi để tránh lỗi kiểu dữ liệu
+        df[col] = df[col].astype(str).replace(['', ' ', '.', '   '], pd.NA)
+        # Thay thế NA bằng chuỗi trống
+        df[col] = df[col].fillna('')
+    return df
+
 # --- Đọc cấu hình từ sheet Config ---
 @retry(
     stop=stop_after_attempt(3),
@@ -639,6 +649,9 @@ def main():
                         df.insert(0, 'row_idx', [row_idx for row_idx, _ in user_data])
                         df['sheet'] = selected_view_sheet
 
+                        # Làm sạch DataFrame
+                        df = clean_dataframe(df)
+
                         # Cấu hình ag-Grid
                         gb = GridOptionsBuilder.from_dataframe(df)
                         gb.configure_column(
@@ -737,6 +750,7 @@ def main():
                     headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
                     if headers and search_results:
                         df = pd.DataFrame(search_results)
+                        df = clean_dataframe(df)  # Làm sạch DataFrame trước khi hiển thị
                         st.dataframe(df)
                     else:
                         st.info("Không tìm thấy kết quả nào khớp với từ khóa.")

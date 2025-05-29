@@ -10,14 +10,14 @@ from datetime import datetime, timedelta
 import pandas as pd
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # --- Cấu hình logging ---
 logging.basicConfig(filename='app.log', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Đặt cấu hình trang đầu tiên ---
-st.set_page_config(page_title="Quản lý nhập liệu - Agribank", page_icon="💻")
+st.set_page_config(page_title="Quản lý nhập liệu - Agribank", page_icon="💻", layout="wide")
 
 # --- CSS để thiết kế giao diện hiện đại, tông đỏ Agribank ---
 st.markdown("""
@@ -61,22 +61,15 @@ st.markdown("""
         color: #333333;
         margin-top: 10px;
     }
-    /* Nút sửa trong ag-Grid */
-    .edit-button {
-        background-color: #A91B2A;
-        color: white;
-        border: none;
-        border-radius: 5px;
-        padding: 5px 10px;
-        font-size: 14px;
-        cursor: pointer;
-    }
-    .edit-button:hover {
-        background-color: #8B1623;
-    }
-    /* Cải thiện hiển thị bảng trên mobile */
+    /* Tối ưu hiển thị bảng trên mobile */
     .ag-root-wrapper {
-        max-height: 80vh !important;
+        max-height: 70vh !important;
+        overflow-x: auto !important;
+    }
+    @media (max-width: 600px) {
+        .ag-root-wrapper {
+            max-height: 50vh !important;
+        }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -104,17 +97,23 @@ def connect_to_gsheets():
 
 # --- Làm sạch dữ liệu DataFrame ---
 def clean_dataframe(df):
-    """Làm sạch DataFrame để tương thích với pyarrow."""
+    """Làm sạch DataFrame để tương thích với pyarrow và ag-Grid."""
     for col in df.columns:
         try:
+            # Chuyển tất cả thành chuỗi
             df[col] = df[col].astype(str).str.strip()
+            # Thay thế giá trị không hợp lệ
             df[col] = df[col].replace(['', ' ', '.', '   ', '<NA>'], pd.NA)
             df[col] = df[col].fillna('')
+            # Loại bỏ ký tự không in được
             df[col] = df[col].apply(lambda x: ''.join(c for c in x if c.isprintable()))
+            # Thay thế ký tự non-ASCII
+            df[col] = df[col].str.encode('ascii', 'ignore').str.decode('ascii')
             if df[col].str.contains(r'[^\x00-\x7F]').any():
                 logger.warning(f"Non-ASCII characters found in column {col}: {df[col].unique()}")
         except Exception as e:
             logger.error(f"Lỗi khi làm sạch cột {col}: {e}")
+    logger.info(f"DataFrame cleaned: {df.head().to_dict()}")
     return df
 
 # --- Validate chuỗi nhập liệu ---
@@ -695,21 +694,16 @@ def main():
 
                         df = clean_dataframe(df)
 
+                        # Thêm cột "Sửa" bằng st.button
+                        df['Sửa'] = df['row_idx'].apply(lambda x: f"Sửa bản ghi {x+2}")
+
                         gb = GridOptionsBuilder.from_dataframe(df)
-                        gb.configure_column(
-                            "Sửa",
-                            headerName="Sửa",
-                            pinned="left",
-                            width=100,
-                            cellRenderer=JsCode("""
-                                function(params) {
-                                    return '<button class="edit-button" onclick="Streamlit.setComponentValue({row_idx: ' + params.data.row_idx + ', sheet: \\'' + params.data.sheet + '\\'})">Sửa</button>';
-                                }
-                            """)
-                        )
+                        for col in df.columns:
+                            if col not in ['Sửa', 'row_idx', 'sheet']:
+                                gb.configure_column(col, minWidth=150, autoSize=True)
+                        gb.configure_column("Sửa", pinned="left", width=150)
                         gb.configure_column("row_idx", hide=True)
                         gb.configure_column("sheet", hide=True)
-                        gb.configure_selection('single')
                         gb.configure_grid_options(
                             domLayout='autoHeight',
                             suppressHorizontalScroll=False,
@@ -717,21 +711,23 @@ def main():
                         )
                         grid_options = gb.build()
 
-                        grid_response = AgGrid(
+                        AgGrid(
                             df,
                             gridOptions=grid_options,
                             update_mode=GridUpdateMode.VALUE_CHANGED,
-                            allow_unsafe_jscode=True,
-                            height=400 if len(df) < 10 else 600,  # Điều chỉnh chiều cao động
+                            height=400 if len(df) < 10 else 600,
                             fit_columns_on_grid_load=True,
                             custom_css={"#gridToolBar": {"display": "none"}},
                         )
 
-                        if 'component_value' in grid_response and grid_response['component_value']:
-                            st.session_state.edit_mode = True
-                            st.session_state.edit_row_idx = grid_response['component_value']['row_idx']
-                            st.session_state.edit_sheet = grid_response['component_value']['sheet']
-                            st.experimental_rerun()  # Tải lại để hiển thị form chỉnh sửa
+                        # Hiển thị nút "Sửa" bằng Streamlit
+                        for idx, row in df.iterrows():
+                            if st.button(f"Sửa bản ghi {idx+2}", key=f"edit_button_{selected_view_sheet}_{idx}"):
+                                st.session_state.edit_mode = True
+                                st.session_state.edit_row_idx = idx
+                                st.session_state.edit_sheet = selected_view_sheet
+                                logger.info(f"Edit button clicked: row_idx={idx}, sheet={selected_view_sheet}")
+                                st.rerun()
 
                         if st.session_state.edit_mode and st.session_state.edit_sheet == selected_view_sheet:
                             st.subheader(f"Chỉnh sửa bản ghi #{st.session_state.edit_row_idx + 2}")

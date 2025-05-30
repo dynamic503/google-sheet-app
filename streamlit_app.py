@@ -52,7 +52,7 @@ st.markdown("""
     .sidebar-logo {
         display: block;
         margin: 0 auto;
-        width: 120px;
+        width: 200px;
     }
     .branch-text {
         text-align: center;

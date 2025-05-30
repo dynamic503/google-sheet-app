@@ -528,7 +528,7 @@ def main():
         st.error(f"Tài khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
         return
 
-    st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=120)
+    st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=200)
     st.sidebar.markdown('<div class="branch-text">Chi nhánh tỉnh Quảng Trị</div>', unsafe_allow_html=True)
     st.sidebar.markdown("---")
     

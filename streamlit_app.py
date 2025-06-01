@@ -11,6 +11,7 @@ import pandas as pd
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+import pytz
 
 # --- Cấu hình logging ---
 logging.basicConfig(filename='app.log', level=logging.INFO)
@@ -52,7 +53,7 @@ st.markdown("""
     .sidebar-logo {
         display: block;
         margin: 0 auto;
-        width: 120px;
+        width: 200px;
     }
     .branch-text {
         text-align: center;
@@ -108,12 +109,40 @@ def connect_to_gsheets():
         logger.error(f"Lỗi kết nối Google Sheets: {e}")
         return None
 
+# --- Lấy định dạng cột từ Google Sheet ---
+def get_column_formats(sh, sheet_name):
+    try:
+        worksheet = sh.worksheet(sheet_name)
+        # Lấy toàn bộ dữ liệu sheet bao gồm định dạng
+        data = worksheet.get('A1:' + chr(65 + len(worksheet.row_values(1)) - 1) + '1', include_tailing_empty=False, value_render_option='FORMATTED_VALUE')
+        headers = data[0] if data else worksheet.row_values(1)
+        formats = {}
+        # Lấy định dạng từ API
+        sheet_formats = worksheet.get('A1:' + chr(65 + len(headers) - 1) + '1', include_tailing_empty=False, value_render_option='UNFORMATTED_VALUE', include_format=True)
+        for idx, cell in enumerate(sheet_formats[0]):
+            header = headers[idx].rstrip('*')
+            if 'format' in cell:
+                format_pattern = cell['format'].get('numberFormat', {}).get('type', '')
+                if format_pattern == 'DATE':
+                    formats[header] = 'date'
+                elif format_pattern == 'NUMBER':
+                    formats[header] = 'number'
+                else:
+                    formats[header] = 'text'
+            else:
+                formats[header] = 'text'
+        return formats
+    except Exception as e:
+        st.error(f"Lỗi khi lấy định dạng cột: {e}")
+        logger.error(f"Lỗi khi lấy định dạng cột: {e}")
+        return {}
+
 # --- Làm sạch dữ liệu DataFrame với kiểm tra ký tự ---
 def clean_dataframe(df):
     """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và log ký tự ẩn."""
     for col in df.columns:
         try:
-            # Chuyển tất cả thành chuỗi
+            # Chuyển tất cả thành chuỗi, giữ nguyên số 0 ở đầu
             df[col] = df[col].astype(str).str.strip()
             # Thay thế giá trị không hợp lệ
             df[col] = df[col].replace(['Err', 'Uhjr', '', ' ', '.', '   ', '<NA>'], pd.NA)
@@ -379,7 +408,10 @@ def add_data_to_sheet(sh, sheet_name, data, username):
         headers = ensure_columns(sh, sheet_name)
         row_data = [data.get(header.rstrip('*'), '') for header in headers[:-2]]
         row_data.append(username)
-        row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # Đặt múi giờ Việt Nam (UTC+7)
+        vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
+        current_time = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
+        row_data.append(current_time)
         worksheet.append_row(row_data)
         # Xóa cache liên quan
         for key in list(st.session_state.keys()):
@@ -408,7 +440,10 @@ def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
         headers = ensure_columns(sh, sheet_name)
         row_data = [data.get(header.rstrip('*'), '') for header in headers[:-2]]
         row_data.append(username)
-        row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # Đặt múi giờ Việt Nam (UTC+7)
+        vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
+        current_time = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
+        row_data.append(current_time)
         worksheet.update(f"A{row_idx + 2}:{chr(65 + len(headers) - 1)}{row_idx + 2}", [row_data])
         # Xóa cache liên quan
         for key in list(st.session_state.keys()):
@@ -440,7 +475,7 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
                 retry=retry_if_exception_type(gspread.exceptions.APIError)
             )
             def fetch_data():
-                data = worksheet.get_all_records()
+                data = worksheet.get_all_records(value_render_option='FORMATTED_VALUE')
                 headers = worksheet.row_values(1)
                 return headers, data
 
@@ -450,7 +485,7 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
                 if role.lower() == 'admin' or row.get("Nguoi_nhap") == username:
                     if start_date and end_date:
                         try:
-                            entry_time = datetime.strptime(row.get("Thoi_gian_nhap", ""), "%Y-%m-%d %H:%M:%S")
+                            entry_time = datetime.strptime(row.get("Thoi_gian_nhap", ""), "%d/%m/%Y %H:%M:%S")
                             if not (start_date <= entry_time.date() <= end_date):
                                 continue
                         except ValueError:
@@ -478,7 +513,8 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
             worksheet = sh.worksheet(sheet_name)
-            data = worksheet.get_all_records()
+            # Lấy dữ liệu với giá trị dạng chuỗi
+            data = worksheet.get_all_records(value_render_option='FORMATTED_VALUE')
             headers = worksheet.row_values(1)
             if not keyword:
                 st.session_state[cache_key] = (headers, data)
@@ -528,7 +564,7 @@ def main():
         st.error(f"Tài khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
         return
 
-    st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=120)
+    st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=200)
     st.sidebar.markdown('<div class="branch-text">Chi nhánh tỉnh Quảng Trị</div>', unsafe_allow_html=True)
     st.sidebar.markdown("---")
     
@@ -626,25 +662,61 @@ def main():
             else:
                 selected_sheet = st.selectbox("Chọn sheet để nhập liệu", input_sheets, key="input_sheet")
                 required_columns, optional_columns = get_columns(sh, selected_sheet)
+                column_formats = get_column_formats(sh, selected_sheet)
                 if required_columns or optional_columns:
                     with st.form(f"input_form_{selected_sheet}"):
                         form_data = {}
                         for header in required_columns:
                             clean_header = header.rstrip('*')
                             st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
-                            form_data[clean_header] = st.text_input(
-                                label=clean_header,
-                                label_visibility="collapsed",
-                                key=f"{selected_sheet}_{clean_header}_input"
-                            )
+                            format_type = column_formats.get(clean_header, 'text')
+                            if format_type == 'date':
+                                form_data[clean_header] = st.date_input(
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input",
+                                    value=None,
+                                    format="DD/MM/YYYY"
+                                )
+                            elif format_type == 'number':
+                                form_data[clean_header] = st.text_input(
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input",
+                                    help="Chỉ nhập số"
+                                )
+                            else:
+                                form_data[clean_header] = st.text_input(
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input"
+                                )
                         for header in optional_columns:
                             clean_header = header.rstrip('*')
-                            form_data[clean_header] = st.text_input(
-                                label=clean_header,
-                                placeholder=f"{clean_header} (tùy chọn)",
-                                label_visibility="collapsed",
-                                key=f"{selected_sheet}_{clean_header}_input"
-                            )
+                            format_type = column_formats.get(clean_header, 'text')
+                            if format_type == 'date':
+                                form_data[clean_header] = st.date_input(
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input",
+                                    value=None,
+                                    format="DD/MM/YYYY"
+                                )
+                            elif format_type == 'number':
+                                form_data[clean_header] = st.text_input(
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input",
+                                    placeholder=f"{clean_header} (tùy chọn, chỉ nhập số)",
+                                    help="Chỉ nhập số"
+                                )
+                            else:
+                                form_data[clean_header] = st.text_input(
+                                    label=clean_header,
+                                    placeholder=f"{clean_header} (tùy chọn)",
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input"
+                                )
                         submit_data = st.form_submit_button("Gửi")
 
                         if submit_data:
@@ -653,21 +725,48 @@ def main():
                             # Validate các trường bắt buộc
                             for header in required_columns:
                                 clean_header = header.rstrip('*')
-                                is_valid, result = validate_input(form_data.get(clean_header, ''), clean_header)
-                                if not is_valid:
-                                    st.error(result)
-                                    missing_required.append(clean_header)
+                                format_type = column_formats.get(clean_header, 'text')
+                                value = form_data.get(clean_header, '')
+                                if format_type == 'date':
+                                    if value is None:
+                                        st.error(f"Trường {clean_header} không được để trống.")
+                                        missing_required.append(clean_header)
+                                    else:
+                                        validated_data[clean_header] = value.strftime("%d/%m/%Y")
+                                elif format_type == 'number':
+                                    if not value:
+                                        st.error(f"Trường {clean_header} không được để trống.")
+                                        missing_required.append(clean_header)
+                                    elif not re.match(r'^\d+$', str(value)):
+                                        st.error(f"Trường {clean_header} chỉ được nhập số.")
+                                        missing_required.append(clean_header)
+                                    else:
+                                        validated_data[clean_header] = str(value)
                                 else:
-                                    validated_data[clean_header] = result
+                                    is_valid, result = validate_input(value, clean_header)
+                                    if not is_valid:
+                                        st.error(result)
+                                        missing_required.append(clean_header)
+                                    else:
+                                        validated_data[clean_header] = result
                             # Nếu có trường bắt buộc bị thiếu, dừng lại và không lưu
                             if missing_required:
                                 st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                                 return  # Dừng xử lý, không lưu dữ liệu
-                            # Validate các trường không bắt buộc
+                            # Không validate các trường không bắt buộc, chỉ lấy giá trị
                             for header in optional_columns:
                                 clean_header = header.rstrip('*')
-                                _, result = validate_input(form_data.get(clean_header, ''), clean_header)
-                                validated_data[clean_header] = result if result else ''  # Nếu trống thì lưu giá trị rỗng
+                                format_type = column_formats.get(clean_header, 'text')
+                                value = form_data.get(clean_header, '')
+                                if format_type == 'date':
+                                    validated_data[clean_header] = value.strftime("%d/%m/%Y") if value else ''
+                                elif format_type == 'number':
+                                    if value and not re.match(r'^\d+$', str(value)):
+                                        st.error(f"Trường {clean_header} chỉ được nhập số.")
+                                        return
+                                    validated_data[clean_header] = str(value) if value else ''
+                                else:
+                                    validated_data[clean_header] = value if value else ''
                             # Lưu dữ liệu nếu không có lỗi
                             if add_data_to_sheet(sh, selected_sheet, validated_data, st.session_state.username):
                                 st.success("🎉 Dữ liệu đã được nhập thành công!")
@@ -777,13 +876,10 @@ def main():
                                         return
                                     else:
                                         if update_data_in_sheet(sh, sheet_name, int(row_idx), validated_data, st.session_state.username):
-                                            st.success(f"🎉 Bản ghi #{int(row_idx) + 2} đã được cập nhật thành công!")
+                                            st.success(f"🎉 Bản ghi #{int(row_idx) + 2} đã được cập nhật thành công!", icon="✅")
                                         else:
                                             st.error("Lỗi khi cập nhật dữ liệu. Vui lòng kiểm tra log và thử lại.")
                                             return
-                            # Cập nhật lại bảng sau khi lưu
-                            st.session_state.filter_applied = False
-                            st.rerun()
                     else:
                         st.info("Không có dữ liệu nào được nhập trong khoảng thời gian hoặc từ khóa này.")
 

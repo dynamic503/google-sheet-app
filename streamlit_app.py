@@ -9,7 +9,9 @@ import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import pytz
-from gspread_pandas import Spread, Client
+from gspread_pandas import Spread
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 import polars as pl
 
 # --- Cấu hình logging ---
@@ -48,9 +50,16 @@ def connect_to_gsheets():
         if not creds_json or not sheet_id:
             st.error("Thiếu biến môi trường GOOGLE_CREDENTIALS_JSON hoặc SHEET_ID")
             return None
+        
+        # Tạo credentials từ JSON
         creds_dict = json.loads(creds_json)
-        client = Client(creds_dict=creds_dict)
-        return Spread(sheet_id, client=client)
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        gc = gspread.authorize(creds)
+        
+        # Khởi tạo Spread với client gspread
+        spread = Spread(sheet_id, client=gc)
+        return spread
     except Exception as e:
         st.error(f"Lỗi kết nối Google Sheets: {e}")
         logger.error(f"Lỗi kết nối Google Sheets: {e}")
@@ -321,7 +330,7 @@ def add_data_to_sheet(spread, sheet_name, data, username):
         vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
         row_data['Thoi_gian_nhap'] = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
         new_df = pl.DataFrame([row_data])
-        df = pl.concat([df, new_df], how="vertical")
+        df = pl.concat([pl.from_pandas(df), new_df], how="vertical")
         spread.df_to_sheet(df.to_pandas(), index=False, sheet=sheet_name, start='A1', replace=True)
         for key in list(st.session_state.keys()):
             if key.startswith(f"{sheet_name}_"):
@@ -684,7 +693,7 @@ def main():
 
                         updated_df = pl.from_pandas(pd.DataFrame(grid_response['data']))
                         if not updated_df.frame_equal(df):
-                            for idx, row in updated_df.to_dicts():
+                            for idx, row in enumerate(updated_df.to_dicts()):
                                 row_idx = row['row_idx']
                                 if pd.isna(row_idx) or not str(row_idx).isdigit():
                                     continue

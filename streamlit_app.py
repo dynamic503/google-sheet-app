@@ -467,7 +467,7 @@ def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
         raise
     except Exception as e:
         st.error(f"Lỗi khi cập nhật dữ liệu: {str(e)}")
-        logger.error(f"Lỗi khi cập nhật dữ liệu tại {sheet_name}, row {row_idx]: {str(e)}")
+        logger.error(f"Lỗi khi cập nhật dữ liệu tại {sheet_name}, row {row_idx}: {str(e)}")
         return False
 
 # --- Lấy dữ liệu đã nhập, hỗ trợ admin thấy tất cả ---

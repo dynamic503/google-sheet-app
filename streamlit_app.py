@@ -50,6 +50,13 @@ st.markdown("""
         font-weight: bold;
     }
     /* Logo và chữ chi nhánh */
+    .sidebar .sidebar-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+    }
     .sidebar-logo {
         display: block;
         margin: 0 auto;
@@ -135,8 +142,8 @@ def get_column_formats(sh, sheet_name):
         return {}
 
 # --- Làm sạch dữ liệu DataFrame với kiểm tra ký tự và giữ số 0 ---
-def clean_dataframe(df):
-    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và số 0 ở đầu bằng cách thêm dấu nháy đơn cho các cột số text."""
+def clean_dataframe(df, headers):
+    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và số 0 ở đầu."""
     for col in df.columns:
         try:
             # Chuyển tất cả thành chuỗi, giữ nguyên số 0 ở đầu
@@ -153,10 +160,6 @@ def clean_dataframe(df):
                     diff_chars = ''.join(c for c in orig if c not in cleaned and ord(c) <= 31)
                     if diff_chars:
                         logger.warning(f"Row {idx}, Column {col}: Removed non-printable chars: {repr(diff_chars)}")
-            # Thêm dấu nháy đơn ('') cho các cột liên quan đến SĐT, CCCD, GTTT, v.v. để giữ số 0
-            col_lower = col.lower()
-            if any(keyword in col_lower for keyword in ['sđt', 'số điện thoại', 'cccd', 'cc', 'gttt']):
-                df[col] = df[col].apply(lambda x: f"'{x}" if x and str(x).strip() else x)
             logger.info(f"DataFrame column {col} after cleaning: {df[col].head().to_list()}")
         except Exception as e:
             logger.error(f"Lỗi khi làm sạch cột {col}: {e}")
@@ -573,7 +576,7 @@ def main():
         st.error(f"Tài khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
         return
 
-    st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=200)
+    st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=200, clamp=False)
     st.sidebar.markdown('<div class="branch-text">Chi nhánh tỉnh Quảng Trị</div>', unsafe_allow_html=True)
     st.sidebar.markdown("---")
     
@@ -818,20 +821,31 @@ def main():
                         df.insert(0, 'row_idx', [row_idx for row_idx, _ in user_data])
                         df['sheet'] = selected_view_sheet
 
-                        df = clean_dataframe(df)
+                        df = clean_dataframe(df, headers)
 
-                        # Tạo grid với inline editing
+                        # Tạo grid với inline editing và valueFormatter cho các cột SĐT/CCCD
                         gb = GridOptionsBuilder.from_dataframe(df)
                         for col in df.columns:
                             if col not in ['row_idx', 'sheet']:
-                                gb.configure_column(
-                                    col,
-                                    minWidth=200,
-                                    autoSize=True,
-                                    wrapText=True,
-                                    autoHeight=True,
-                                    editable=True  # Bật chỉnh sửa trực tiếp
-                                )
+                                if any(keyword in col.lower() for keyword in ['sđt', 'số điện thoại', 'cccd', 'cc', 'gttt']):
+                                    gb.configure_column(
+                                        col,
+                                        minWidth=200,
+                                        autoSize=True,
+                                        wrapText=True,
+                                        autoHeight=True,
+                                        editable=True,
+                                        valueFormatter="data === null || data === undefined ? '' : String(data)"
+                                    )
+                                else:
+                                    gb.configure_column(
+                                        col,
+                                        minWidth=200,
+                                        autoSize=True,
+                                        wrapText=True,
+                                        autoHeight=True,
+                                        editable=True
+                                    )
                             else:
                                 gb.configure_column(col, hide=True)
                         gb.configure_grid_options(
@@ -908,7 +922,7 @@ def main():
                     headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
                     if headers and search_results:
                         df = pd.DataFrame(search_results, dtype=str)
-                        df = clean_dataframe(df)
+                        df = clean_dataframe(df, headers)
                         st.dataframe(df)
                     else:
                         st.info("Không tìm thấy kết quả nào khớp với từ khóa.")

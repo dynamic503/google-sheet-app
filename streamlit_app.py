@@ -134,9 +134,9 @@ def get_column_formats(sh, sheet_name):
         logger.error(f"Lỗi khi lấy định dạng cột: {e}")
         return {}
 
-# --- Làm sạch dữ liệu DataFrame với kiểm tra ký tự ---
+# --- Làm sạch dữ liệu DataFrame với kiểm tra ký tự và giữ số 0 ---
 def clean_dataframe(df):
-    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và số 0 ở đầu."""
+    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và số 0 ở đầu bằng cách thêm dấu nháy đơn cho các cột số text."""
     for col in df.columns:
         try:
             # Chuyển tất cả thành chuỗi, giữ nguyên số 0 ở đầu
@@ -153,6 +153,10 @@ def clean_dataframe(df):
                     diff_chars = ''.join(c for c in orig if c not in cleaned and ord(c) <= 31)
                     if diff_chars:
                         logger.warning(f"Row {idx}, Column {col}: Removed non-printable chars: {repr(diff_chars)}")
+            # Thêm dấu nháy đơn ('') cho các cột liên quan đến SĐT, CCCD, GTTT, v.v. để giữ số 0
+            col_lower = col.lower()
+            if any(keyword in col_lower for keyword in ['sđt', 'số điện thoại', 'cccd', 'cc', 'gttt']):
+                df[col] = df[col].apply(lambda x: f"'{x}" if x and str(x).strip() else x)
             logger.info(f"DataFrame column {col} after cleaning: {df[col].head().to_list()}")
         except Exception as e:
             logger.error(f"Lỗi khi làm sạch cột {col}: {e}")

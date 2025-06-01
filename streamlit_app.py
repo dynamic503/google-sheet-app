@@ -113,11 +113,10 @@ def connect_to_gsheets():
 def get_column_formats(sh, sheet_name):
     try:
         worksheet = sh.worksheet(sheet_name)
-        # Lấy toàn bộ dữ liệu sheet bao gồm định dạng
-        data = worksheet.get('A1:' + chr(65 + len(worksheet.row_values(1)) - 1) + '1', include_tailing_empty=False, value_render_option='FORMATTED_VALUE')
-        headers = data[0] if data else worksheet.row_values(1)
+        # Lấy tiêu đề cột
+        headers = worksheet.row_values(1)
         formats = {}
-        # Lấy định dạng từ API
+        # Thử lấy định dạng từ API
         sheet_formats = worksheet.get('A1:' + chr(65 + len(headers) - 1) + '1', include_tailing_empty=False, value_render_option='UNFORMATTED_VALUE', include_format=True)
         for idx, cell in enumerate(sheet_formats[0]):
             header = headers[idx].rstrip('*')
@@ -130,16 +129,35 @@ def get_column_formats(sh, sheet_name):
                 else:
                     formats[header] = 'text'
             else:
-                formats[header] = 'text'
+                # Suy luận định dạng dựa trên tên cột
+                header_lower = header.lower()
+                if 'ngày' in header_lower or 'date' in header_lower:
+                    formats[header] = 'date'
+                elif 'di động' in header_lower or 'điện thoại' in header_lower or 'cmt' in header_lower or 'số' in header_lower:
+                    formats[header] = 'number'
+                else:
+                    formats[header] = 'text'
         return formats
     except Exception as e:
         st.error(f"Lỗi khi lấy định dạng cột: {e}")
         logger.error(f"Lỗi khi lấy định dạng cột: {e}")
-        return {}
+        # Nếu không lấy được định dạng, suy luận dựa trên tên cột
+        headers = worksheet.row_values(1)
+        formats = {}
+        for header in headers:
+            header_clean = header.rstrip('*')
+            header_lower = header_clean.lower()
+            if 'ngày' in header_lower or 'date' in header_lower:
+                formats[header_clean] = 'date'
+            elif 'di động' in header_lower or 'điện thoại' in header_lower or 'cmt' in header_lower or 'số' in header_lower:
+                formats[header_clean] = 'number'
+            else:
+                formats[header_clean] = 'text'
+        return formats
 
 # --- Làm sạch dữ liệu DataFrame với kiểm tra ký tự ---
 def clean_dataframe(df):
-    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và log ký tự ẩn."""
+    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và số 0 ở đầu."""
     for col in df.columns:
         try:
             # Chuyển tất cả thành chuỗi, giữ nguyên số 0 ở đầu
@@ -477,6 +495,10 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
             def fetch_data():
                 data = worksheet.get_all_records(value_render_option='FORMATTED_VALUE')
                 headers = worksheet.row_values(1)
+                # Ép kiểu tất cả dữ liệu thành chuỗi
+                for row in data:
+                    for key in row:
+                        row[key] = str(row[key])
                 return headers, data
 
             headers, data = fetch_data()
@@ -516,6 +538,10 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
             # Lấy dữ liệu với giá trị dạng chuỗi
             data = worksheet.get_all_records(value_render_option='FORMATTED_VALUE')
             headers = worksheet.row_values(1)
+            # Ép kiểu tất cả dữ liệu thành chuỗi
+            for row in data:
+                for key in row:
+                    row[key] = str(row[key])
             if not keyword:
                 st.session_state[cache_key] = (headers, data)
             else:
@@ -803,7 +829,7 @@ def main():
                         sh, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword
                     )
                     if headers and user_data:
-                        df = pd.DataFrame([row for _, row in user_data])
+                        df = pd.DataFrame([row for _, row in user_data], dtype=str)
                         df.insert(0, 'row_idx', [row_idx for row_idx, _ in user_data])
                         df['sheet'] = selected_view_sheet
 
@@ -896,7 +922,7 @@ def main():
                 if st.button("Tìm kiếm", key="search_button"):
                     headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
                     if headers and search_results:
-                        df = pd.DataFrame(search_results)
+                        df = pd.DataFrame(search_results, dtype=str)
                         df = clean_dataframe(df)
                         st.dataframe(df)
                     else:

@@ -13,6 +13,7 @@ from gspread_pandas import Spread
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import polars as pl
+import pandas as pd
 
 # --- Cấu hình logging ---
 logging.basicConfig(filename='app.log', level=logging.INFO)
@@ -57,8 +58,8 @@ def connect_to_gsheets():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         gc = gspread.authorize(creds)
         
-        # Khởi tạo Spread với client gspread
-        spread = Spread(sheet_id, client=gc)
+        # Khởi tạo Spread với client gspread và bỏ qua file config mặc định
+        spread = Spread(sheet_id, client=gc, create_spread=False, config=None)
         return spread
     except Exception as e:
         st.error(f"Lỗi kết nối Google Sheets: {e}")
@@ -68,12 +69,12 @@ def connect_to_gsheets():
 # --- Lấy định dạng cột từ hàng thứ 2 với xử lý ngày và số 0 ---
 def get_column_formats_from_row2(spread, sheet_name):
     try:
-        worksheet = spread.sheet_to_df(index=0, sheet=sheet_name, usecols=[0], nrows=2)
-        headers = worksheet.columns
+        worksheet = spread.sheet_to_df(index=0, sheet=sheet_name, header=None, start_row=1, end_row=2)
+        headers = worksheet.iloc[0].tolist()
         row2_values = worksheet.iloc[1].tolist()
         formats = {}
         for header, value in zip(headers, row2_values):
-            header_clean = header.rstrip('*')
+            header_clean = str(header).rstrip('*')
             if pd.isna(value):
                 formats[header_clean] = 'text'
             else:
@@ -103,10 +104,10 @@ def clean_dataframe(df, headers, column_formats):
                 pl.col(col).cast(pl.Utf8).apply(
                     lambda x: datetime.strptime(x, '%m/%d/%Y').strftime('%d/%m/%Y') 
                     if pd.notna(x) and re.match(r'^\d{2}/\d{2}/\d{4}$', str(x)) else x
-                )
+                ).alias(col)
             )
         elif column_formats.get(col, 'text') in ['text', 'number']:
-            df = df.with_columns(pl.col(col).cast(pl.Utf8))
+            df = df.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
     return df
 
 # --- Validate chuỗi nhập liệu ---
@@ -149,7 +150,7 @@ def get_input_sheets(spread):
             if not config:
                 return []
             sheets = [row['Sheetname'] for row in config if row.get('Nhập') == 1]
-            existing_sheets = spread.sheets
+            existing_sheets = [s.title for s in spread.spread.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet nhập liệu nào hợp lệ theo cấu hình Config.")
@@ -170,7 +171,7 @@ def get_lookup_sheets(spread):
             if not config:
                 return []
             sheets = [row['Sheetname'] for row in config if row.get('Tìm kiếm') == 1]
-            existing_sheets = spread.sheets
+            existing_sheets = [s.title for s in spread.spread.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet tra cứu nào hợp lệ theo cấu hình Config.")
@@ -191,7 +192,7 @@ def get_view_sheets(spread):
             if not config:
                 return []
             sheets = [row['Sheetname'] for row in config if row.get('Xem đã nhập') == 1]
-            existing_sheets = spread.sheets
+            existing_sheets = [s.title for s in spread.spread.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet xem dữ liệu nào hợp lệ theo cấu hình Config.")
@@ -280,10 +281,10 @@ def get_columns(spread, sheet_name):
     cache_key = f"columns_{sheet_name}"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            df = spread.sheet_to_df(index=0, sheet=sheet_name, nrows=1)
-            headers = df.columns.tolist()
-            required_columns = [h for h in headers if h.endswith('*')]
-            optional_columns = [h for h in headers if not h.endswith('*') and h not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
+            df = spread.sheet_to_df(index=0, sheet=sheet_name, header=None, start_row=1, end_row=1)
+            headers = df.iloc[0].tolist()
+            required_columns = [h for h in headers if str(h).endswith('*')]
+            optional_columns = [h for h in headers if not str(h).endswith('*') and h not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
             st.session_state[cache_key] = (required_columns, optional_columns)
             st.session_state[f"{cache_key}_timestamp"] = time.time()
         except Exception as e:
@@ -300,15 +301,20 @@ def get_columns(spread, sheet_name):
 )
 def ensure_columns(spread, sheet_name):
     try:
-        df = spread.sheet_to_df(index=0, sheet=sheet_name, nrows=1)
-        headers = df.columns.tolist()
+        df = spread.sheet_to_df(index=0, sheet=sheet_name, header=None, start_row=1, end_row=1)
+        headers = df.iloc[0].tolist()
         if "Nguoi_nhap" not in headers:
             headers.append("Nguoi_nhap")
-            df['Nguoi_nhap'] = None
         if "Thoi_gian_nhap" not in headers:
             headers.append("Thoi_gian_nhap")
-            df['Thoi_gian_nhap'] = None
-        spread.df_to_sheet(df, index=False, sheet=sheet_name, start='A1', replace=True)
+        # Cập nhật header nếu cần
+        if len(headers) != len(df.columns):
+            new_df = spread.sheet_to_df(index=0, sheet=sheet_name)
+            new_df.columns = headers + [''] * (len(new_df.columns) - len(headers))
+            new_df.loc[-1] = headers  # Thêm header vào hàng đầu tiên
+            new_df.index = new_df.index + 1
+            new_df = new_df.sort_index()
+            spread.df_to_sheet(new_df, index=False, sheet=sheet_name, start='A1', replace=True)
         return headers
     except Exception as e:
         st.error(f"Lỗi khi kiểm tra/thêm cột: {e}")
@@ -325,7 +331,7 @@ def add_data_to_sheet(spread, sheet_name, data, username):
     try:
         df = spread.sheet_to_df(index=0, sheet=sheet_name)
         headers = ensure_columns(spread, sheet_name)
-        row_data = {header.rstrip('*'): data.get(header.rstrip('*'), '') for header in headers[:-2]}
+        row_data = {str(header).rstrip('*'): data.get(str(header).rstrip('*'), '') for header in headers if header not in ["Nguoi_nhap", "Thoi_gian_nhap"]}
         row_data['Nguoi_nhap'] = username
         vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
         row_data['Thoi_gian_nhap'] = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
@@ -351,11 +357,12 @@ def update_data_in_sheet(spread, sheet_name, row_idx, data, username):
     try:
         df = spread.sheet_to_df(index=0, sheet=sheet_name)
         headers = ensure_columns(spread, sheet_name)
-        row_data = {header.rstrip('*'): data.get(header.rstrip('*'), '') for header in headers[:-2]}
+        row_data = {str(header).rstrip('*'): data.get(str(header).rstrip('*'), '') for header in headers if header not in ["Nguoi_nhap", "Thoi_gian_nhap"]}
         row_data['Nguoi_nhap'] = username
         vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
         row_data['Thoi_gian_nhap'] = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
-        df.iloc[row_idx] = row_data
+        for key, value in row_data.items():
+            df.loc[row_idx, key] = value
         spread.df_to_sheet(df, index=False, sheet=sheet_name, start='A1', replace=True)
         for key in list(st.session_state.keys()):
             if key.startswith(f"{sheet_name}_"):
@@ -416,7 +423,7 @@ def search_in_sheet(spread, sheet_name, keyword, column=None):
                         pl.concat_str([pl.col(c) for c in df.columns]).str.to_lowercase().str.contains(keyword)
                     )
                 else:
-                    clean_column = column.rstrip('*')
+                    clean_column = str(column).rstrip('*')
                     filtered_data = df.filter(
                         pl.col(clean_column).str.to_lowercase().str.contains(keyword)
                     )
@@ -558,7 +565,7 @@ def main():
                     with st.form(f"input_form_{selected_sheet}"):
                         form_data = {}
                         for header in required_columns:
-                            clean_header = header.rstrip('*')
+                            clean_header = str(header).rstrip('*')
                             st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
                             format_type = column_formats.get(clean_header, 'text')
                             if format_type == 'date':
@@ -573,7 +580,7 @@ def main():
                                     help=help_text
                                 )
                         for header in optional_columns:
-                            clean_header = header.rstrip('*')
+                            clean_header = str(header).rstrip('*')
                             format_type = column_formats.get(clean_header, 'text')
                             if format_type == 'date':
                                 form_data[clean_header] = st.date_input(
@@ -593,7 +600,7 @@ def main():
                             missing_required = []
                             validated_data = {}
                             for header in required_columns:
-                                clean_header = header.rstrip('*')
+                                clean_header = str(header).rstrip('*')
                                 format_type = column_formats.get(clean_header, 'text')
                                 value = form_data.get(clean_header, '')
                                 if format_type == 'date':
@@ -622,7 +629,7 @@ def main():
                                 st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                                 return
                             for header in optional_columns:
-                                clean_header = header.rstrip('*')
+                                clean_header = str(header).rstrip('*')
                                 format_type = column_formats.get(clean_header, 'text')
                                 value = form_data.get(clean_header, '')
                                 if format_type == 'date':
@@ -705,7 +712,7 @@ def main():
                                     validated_data = {}
                                     required_columns, _ = get_columns(spread, sheet_name)
                                     for header in required_columns:
-                                        clean_header = header.rstrip('*')
+                                        clean_header = str(header).rstrip('*')
                                         is_valid, result = validate_input(updated_data.get(clean_header, ''), clean_header)
                                         if not is_valid:
                                             st.error(result)
@@ -734,7 +741,8 @@ def main():
                 st.error("Không tìm thấy sheet tra cứu hợp lệ.")
             else:
                 selected_lookup_sheet = st.selectbox("Chọn sheet để tìm kiếm", lookup_sheets, key="lookup_sheet")
-                headers = [h.rstrip('*') for h in get_columns(spread, selected_lookup_sheet)[0]] + get_columns(spread, selected_lookup_sheet)[1]
+                required_columns, optional_columns = get_columns(spread, selected_lookup_sheet)
+                headers = [str(h).rstrip('*') for h in required_columns] + [str(h) for h in optional_columns]
                 search_column = st.selectbox("Chọn cột để tìm kiếm", ["Tất cả"] + headers, key="search_column")
                 keyword = st.text_input("Nhập từ khóa tìm kiếm", key="search_keyword")
                 if st.button("Tìm kiếm", key="search_button"):

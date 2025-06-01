@@ -9,7 +9,6 @@ import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import pytz
-from gspread_pandas import Spread
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import polars as pl
@@ -58,8 +57,8 @@ def connect_to_gsheets():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         gc = gspread.authorize(creds)
         
-        # Khởi tạo Spread với client gspread và bỏ qua file config mặc định
-        spread = Spread(sheet_id, client=gc, create_spread=False, config=None)
+        # Truy cập spreadsheet
+        spread = gc.open_by_key(sheet_id)
         return spread
     except Exception as e:
         st.error(f"Lỗi kết nối Google Sheets: {e}")
@@ -69,13 +68,14 @@ def connect_to_gsheets():
 # --- Lấy định dạng cột từ hàng thứ 2 với xử lý ngày và số 0 ---
 def get_column_formats_from_row2(spread, sheet_name):
     try:
-        worksheet = spread.sheet_to_df(index=0, sheet=sheet_name, header=None, start_row=1, end_row=2)
-        headers = worksheet.iloc[0].tolist()
-        row2_values = worksheet.iloc[1].tolist()
+        worksheet = spread.worksheet(sheet_name)
+        data = worksheet.get_all_values()
+        headers = data[0]
+        row2_values = data[1] if len(data) > 1 else ['' for _ in headers]
         formats = {}
         for header, value in zip(headers, row2_values):
             header_clean = str(header).rstrip('*')
-            if pd.isna(value):
+            if not value:
                 formats[header_clean] = 'text'
             else:
                 try:
@@ -129,11 +129,15 @@ def get_sheet_config(spread):
     cache_key = "sheet_config"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            data = spread.sheet_to_df(index=0, sheet="Config").to_dict('records')
-            if not data:
+            worksheet = spread.worksheet("Config")
+            data = worksheet.get_all_values()
+            if not data or len(data) <= 1:
                 st.error("Sheet Config trống. Vui lòng thêm dữ liệu với các cột: Sheetname, Tìm kiếm, Nhập, Xem đã nhập.")
                 return []
-            st.session_state[cache_key] = data
+            headers = data[0]
+            rows = data[1:]
+            config = [dict(zip(headers, row)) for row in rows]
+            st.session_state[cache_key] = config
             st.session_state[f"{cache_key}_timestamp"] = time.time()
         except Exception as e:
             st.error(f"Lỗi khi đọc sheet Config: {e}")
@@ -149,8 +153,8 @@ def get_input_sheets(spread):
             config = get_sheet_config(spread)
             if not config:
                 return []
-            sheets = [row['Sheetname'] for row in config if row.get('Nhập') == 1]
-            existing_sheets = [s.title for s in spread.spread.worksheets()]
+            sheets = [row['Sheetname'] for row in config if row.get('Nhập') == '1']
+            existing_sheets = [s.title for s in spread.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet nhập liệu nào hợp lệ theo cấu hình Config.")
@@ -170,8 +174,8 @@ def get_lookup_sheets(spread):
             config = get_sheet_config(spread)
             if not config:
                 return []
-            sheets = [row['Sheetname'] for row in config if row.get('Tìm kiếm') == 1]
-            existing_sheets = [s.title for s in spread.spread.worksheets()]
+            sheets = [row['Sheetname'] for row in config if row.get('Tìm kiếm') == '1']
+            existing_sheets = [s.title for s in spread.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet tra cứu nào hợp lệ theo cấu hình Config.")
@@ -191,8 +195,8 @@ def get_view_sheets(spread):
             config = get_sheet_config(spread)
             if not config:
                 return []
-            sheets = [row['Sheetname'] for row in config if row.get('Xem đã nhập') == 1]
-            existing_sheets = [s.title for s in spread.spread.worksheets()]
+            sheets = [row['Sheetname'] for row in config if row.get('Xem đã nhập') == '1']
+            existing_sheets = [s.title for s in spread.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet xem dữ liệu nào hợp lệ theo cấu hình Config.")
@@ -232,7 +236,13 @@ def is_strong_password(password):
 )
 def get_users(spread):
     try:
-        return spread.sheet_to_df(index=0, sheet="User").to_dict('records')
+        worksheet = spread.worksheet("User")
+        data = worksheet.get_all_values()
+        if not data or len(data) <= 1:
+            return []
+        headers = data[0]
+        rows = data[1:]
+        return [dict(zip(headers, row)) for row in rows]
     except Exception as e:
         st.error(f"Lỗi khi lấy dữ liệu người dùng: {e}")
         logger.error(f"Lỗi khi lấy dữ liệu người dùng: {e}")
@@ -262,13 +272,18 @@ def check_login(spread, username, password):
 )
 def change_password(spread, username, old_pw, new_pw):
     try:
-        df = spread.sheet_to_df(index=0, sheet="User")
+        worksheet = spread.worksheet("User")
+        data = worksheet.get_all_values()
+        if not data or len(data) <= 1:
+            return False
+        headers = data[0]
+        rows = data[1:]
         hashed_old = hash_password(old_pw)
         hashed_new = hash_password(new_pw)
-        for idx, row in df.iterrows():
-            if row['Username'] == username and (str(row['Password']) == old_pw or str(row['Password']) == hashed_old):
-                df.at[idx, 'Password'] = hashed_new
-                spread.df_to_sheet(df, index=False, sheet="User", start='A1', replace=True)
+        for idx, row in enumerate(rows):
+            if row[headers.index('Username')] == username and (str(row[headers.index('Password')]) == old_pw or str(row[headers.index('Password')]) == hashed_old):
+                rows[idx][headers.index('Password')] = hashed_new
+                worksheet.update('A2', [headers] + rows)
                 return True
         return False
     except Exception as e:
@@ -281,8 +296,8 @@ def get_columns(spread, sheet_name):
     cache_key = f"columns_{sheet_name}"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            df = spread.sheet_to_df(index=0, sheet=sheet_name, header=None, start_row=1, end_row=1)
-            headers = df.iloc[0].tolist()
+            worksheet = spread.worksheet(sheet_name)
+            headers = worksheet.row_values(1)
             required_columns = [h for h in headers if str(h).endswith('*')]
             optional_columns = [h for h in headers if not str(h).endswith('*') and h not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
             st.session_state[cache_key] = (required_columns, optional_columns)
@@ -301,20 +316,14 @@ def get_columns(spread, sheet_name):
 )
 def ensure_columns(spread, sheet_name):
     try:
-        df = spread.sheet_to_df(index=0, sheet=sheet_name, header=None, start_row=1, end_row=1)
-        headers = df.iloc[0].tolist()
+        worksheet = spread.worksheet(sheet_name)
+        headers = worksheet.row_values(1)
         if "Nguoi_nhap" not in headers:
             headers.append("Nguoi_nhap")
+            worksheet.append_row(["Nguoi_nhap"])
         if "Thoi_gian_nhap" not in headers:
             headers.append("Thoi_gian_nhap")
-        # Cập nhật header nếu cần
-        if len(headers) != len(df.columns):
-            new_df = spread.sheet_to_df(index=0, sheet=sheet_name)
-            new_df.columns = headers + [''] * (len(new_df.columns) - len(headers))
-            new_df.loc[-1] = headers  # Thêm header vào hàng đầu tiên
-            new_df.index = new_df.index + 1
-            new_df = new_df.sort_index()
-            spread.df_to_sheet(new_df, index=False, sheet=sheet_name, start='A1', replace=True)
+            worksheet.append_row(["Thoi_gian_nhap"])
         return headers
     except Exception as e:
         st.error(f"Lỗi khi kiểm tra/thêm cột: {e}")
@@ -329,15 +338,13 @@ def ensure_columns(spread, sheet_name):
 )
 def add_data_to_sheet(spread, sheet_name, data, username):
     try:
-        df = spread.sheet_to_df(index=0, sheet=sheet_name)
+        worksheet = spread.worksheet(sheet_name)
         headers = ensure_columns(spread, sheet_name)
-        row_data = {str(header).rstrip('*'): data.get(str(header).rstrip('*'), '') for header in headers if header not in ["Nguoi_nhap", "Thoi_gian_nhap"]}
-        row_data['Nguoi_nhap'] = username
+        row_data = [data.get(str(header).rstrip('*'), '') for header in headers if header not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
+        row_data.append(username)
         vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
-        row_data['Thoi_gian_nhap'] = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
-        new_df = pl.DataFrame([row_data])
-        df = pl.concat([pl.from_pandas(df), new_df], how="vertical")
-        spread.df_to_sheet(df.to_pandas(), index=False, sheet=sheet_name, start='A1', replace=True)
+        row_data.append(datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S"))
+        worksheet.append_row(row_data)
         for key in list(st.session_state.keys()):
             if key.startswith(f"{sheet_name}_"):
                 del st.session_state[key]
@@ -355,15 +362,15 @@ def add_data_to_sheet(spread, sheet_name, data, username):
 )
 def update_data_in_sheet(spread, sheet_name, row_idx, data, username):
     try:
-        df = spread.sheet_to_df(index=0, sheet=sheet_name)
+        worksheet = spread.worksheet(sheet_name)
         headers = ensure_columns(spread, sheet_name)
-        row_data = {str(header).rstrip('*'): data.get(str(header).rstrip('*'), '') for header in headers if header not in ["Nguoi_nhap", "Thoi_gian_nhap"]}
-        row_data['Nguoi_nhap'] = username
+        row_data = [data.get(str(header).rstrip('*'), '') for header in headers if header not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
+        row_data.append(username)
         vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
-        row_data['Thoi_gian_nhap'] = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
-        for key, value in row_data.items():
-            df.loc[row_idx, key] = value
-        spread.df_to_sheet(df, index=False, sheet=sheet_name, start='A1', replace=True)
+        row_data.append(datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S"))
+        worksheet.update_cell(row_idx + 2, 1, row_data[0])  # Cập nhật từ cột 1
+        for i, value in enumerate(row_data[1:], start=2):
+            worksheet.update_cell(row_idx + 2, i, value)
         for key in list(st.session_state.keys()):
             if key.startswith(f"{sheet_name}_"):
                 del st.session_state[key]
@@ -377,14 +384,19 @@ def update_data_in_sheet(spread, sheet_name, row_idx, data, username):
 def get_user_data(spread, sheet_name, username, role, start_date=None, end_date=None, keyword=None):
     try:
         cache_key = f"{sheet_name}_{username}_{role}_{start_date}_{end_date}_{keyword}"
-        df = spread.sheet_to_df(index=0, sheet=sheet_name)
-        row_count = len(df)
+        worksheet = spread.worksheet(sheet_name)
+        data = worksheet.get_all_values()
+        if not data or len(data) <= 1:
+            return [], []
+        headers = data[0]
+        rows = data[1:]
+        df = pl.DataFrame(rows, schema=headers)
+        row_count = len(rows)
         cached_row_count = st.session_state.get(f"{cache_key}_row_count", 0)
 
         if cache_key not in st.session_state or row_count > cached_row_count:
             column_formats = get_column_formats_from_row2(spread, sheet_name)
-            df = pl.from_pandas(df)
-            df = clean_dataframe(df, df.columns, column_formats)
+            df = clean_dataframe(df, headers, column_formats)
             filtered_data = df.filter(
                 (pl.col("Nguoi_nhap") == username) | (role.lower() == 'admin')
             )
@@ -397,7 +409,7 @@ def get_user_data(spread, sheet_name, username, role, start_date=None, end_date=
                 filtered_data = filtered_data.filter(
                     pl.concat_str([pl.col(c) for c in filtered_data.columns]).str.to_lowercase().str.contains(keyword)
                 )
-            st.session_state[cache_key] = (df.columns, list(zip(range(len(filtered_data)), filtered_data.to_dicts())))
+            st.session_state[cache_key] = (headers, list(zip(range(len(filtered_data)), filtered_data.to_dicts())))
             st.session_state[f"{cache_key}_row_count"] = row_count
         return st.session_state[cache_key]
     except Exception as e:
@@ -410,12 +422,18 @@ def search_in_sheet(spread, sheet_name, keyword, column=None):
     cache_key = f"search_{sheet_name}_{keyword}_{column}"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            df = spread.sheet_to_df(index=0, sheet=sheet_name)
+            worksheet = spread.worksheet(sheet_name)
+            data = worksheet.get_all_values()
+            if not data or len(data) <= 1:
+                st.session_state[cache_key] = ([], [])
+                return st.session_state[cache_key]
+            headers = data[0]
+            rows = data[1:]
+            df = pl.DataFrame(rows, schema=headers)
             column_formats = get_column_formats_from_row2(spread, sheet_name)
-            df = pl.from_pandas(df)
-            df = clean_dataframe(df, df.columns, column_formats)
+            df = clean_dataframe(df, headers, column_formats)
             if not keyword:
-                st.session_state[cache_key] = (df.columns, df.to_dicts())
+                st.session_state[cache_key] = (headers, df.to_dicts())
             else:
                 keyword = keyword.lower()
                 if column == "Tất cả":
@@ -427,7 +445,7 @@ def search_in_sheet(spread, sheet_name, keyword, column=None):
                     filtered_data = df.filter(
                         pl.col(clean_column).str.to_lowercase().str.contains(keyword)
                     )
-                st.session_state[cache_key] = (df.columns, filtered_data.to_dicts())
+                st.session_state[cache_key] = (headers, filtered_data.to_dicts())
             st.session_state[f"{cache_key}_timestamp"] = time.time()
         except Exception as e:
             st.error(f"Lỗi khi tìm kiếm dữ liệu: {e}")

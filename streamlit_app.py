@@ -113,24 +113,21 @@ def connect_to_gsheets():
 def get_column_formats(sh, sheet_name):
     try:
         worksheet = sh.worksheet(sheet_name)
-        # Lấy toàn bộ dữ liệu sheet bao gồm định dạng
-        data = worksheet.get('A1:' + chr(65 + len(worksheet.row_values(1)) - 1) + '1', include_tailing_empty=False, value_render_option='FORMATTED_VALUE')
-        headers = data[0] if data else worksheet.row_values(1)
+        # Lấy tiêu đề cột
+        headers = worksheet.row_values(1)
         formats = {}
-        # Lấy định dạng từ API
-        sheet_formats = worksheet.get('A1:' + chr(65 + len(headers) - 1) + '1', include_tailing_empty=False, value_render_option='UNFORMATTED_VALUE', include_format=True)
-        for idx, cell in enumerate(sheet_formats[0]):
-            header = headers[idx].rstrip('*')
-            if 'format' in cell:
-                format_pattern = cell['format'].get('numberFormat', {}).get('type', '')
-                if format_pattern == 'DATE':
-                    formats[header] = 'date'
-                elif format_pattern == 'NUMBER':
-                    formats[header] = 'number'
-                else:
-                    formats[header] = 'text'
+        for header in headers:
+            header_clean = header.rstrip('*')
+            header_lower = header_clean.lower()
+            # Định dạng ngày: chứa "ngày" hoặc "date"
+            if 'ngày' in header_lower or 'date' in header_lower:
+                formats[header_clean] = 'date'
+            # Định dạng số: chứa "số lượng", "số tiền", "amount", "tổng", "sum", "total"
+            elif any(keyword in header_lower for keyword in ['số lượng', 'số tiền', 'amount', 'tổng', 'sum', 'total']):
+                formats[header_clean] = 'number'
+            # Định dạng text (nhưng vẫn kiểm tra nhập số nếu là SĐT, CCCD, GTTT, v.v.)
             else:
-                formats[header] = 'text'
+                formats[header_clean] = 'text'
         return formats
     except Exception as e:
         st.error(f"Lỗi khi lấy định dạng cột: {e}")
@@ -139,7 +136,7 @@ def get_column_formats(sh, sheet_name):
 
 # --- Làm sạch dữ liệu DataFrame với kiểm tra ký tự ---
 def clean_dataframe(df):
-    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và log ký tự ẩn."""
+    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và số 0 ở đầu."""
     for col in df.columns:
         try:
             # Chuyển tất cả thành chuỗi, giữ nguyên số 0 ở đầu
@@ -477,6 +474,10 @@ def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None
             def fetch_data():
                 data = worksheet.get_all_records(value_render_option='FORMATTED_VALUE')
                 headers = worksheet.row_values(1)
+                # Ép kiểu tất cả dữ liệu thành chuỗi
+                for row in data:
+                    for key in row:
+                        row[key] = str(row[key])
                 return headers, data
 
             headers, data = fetch_data()
@@ -516,6 +517,10 @@ def search_in_sheet(sh, sheet_name, keyword, column=None):
             # Lấy dữ liệu với giá trị dạng chuỗi
             data = worksheet.get_all_records(value_render_option='FORMATTED_VALUE')
             headers = worksheet.row_values(1)
+            # Ép kiểu tất cả dữ liệu thành chuỗi
+            for row in data:
+                for key in row:
+                    row[key] = str(row[key])
             if not keyword:
                 st.session_state[cache_key] = (headers, data)
             else:
@@ -678,18 +683,16 @@ def main():
                                     value=None,
                                     format="DD/MM/YYYY"
                                 )
-                            elif format_type == 'number':
+                            else:
+                                # Xác định xem cột có phải là SĐT, CCCD, GTTT, v.v. không
+                                header_lower = clean_header.lower()
+                                is_numeric_text = any(keyword in header_lower for keyword in ['sđt', 'số điện thoại', 'cccd', 'cc', 'gttt'])
+                                help_text = "Chỉ nhập số" if format_type == 'number' or is_numeric_text else None
                                 form_data[clean_header] = st.text_input(
                                     label=clean_header,
                                     label_visibility="collapsed",
                                     key=f"{selected_sheet}_{clean_header}_input",
-                                    help="Chỉ nhập số"
-                                )
-                            else:
-                                form_data[clean_header] = st.text_input(
-                                    label=clean_header,
-                                    label_visibility="collapsed",
-                                    key=f"{selected_sheet}_{clean_header}_input"
+                                    help=help_text
                                 )
                         for header in optional_columns:
                             clean_header = header.rstrip('*')
@@ -702,20 +705,18 @@ def main():
                                     value=None,
                                     format="DD/MM/YYYY"
                                 )
-                            elif format_type == 'number':
+                            else:
+                                # Xác định xem cột có phải là SĐT, CCCD, GTTT, v.v. không
+                                header_lower = clean_header.lower()
+                                is_numeric_text = any(keyword in header_lower for keyword in ['sđt', 'số điện thoại', 'cccd', 'cc', 'gttt'])
+                                help_text = "Chỉ nhập số" if format_type == 'number' or is_numeric_text else None
+                                placeholder = f"{clean_header} (tùy chọn, chỉ nhập số)" if format_type == 'number' or is_numeric_text else f"{clean_header} (tùy chọn)"
                                 form_data[clean_header] = st.text_input(
                                     label=clean_header,
                                     label_visibility="collapsed",
                                     key=f"{selected_sheet}_{clean_header}_input",
-                                    placeholder=f"{clean_header} (tùy chọn, chỉ nhập số)",
-                                    help="Chỉ nhập số"
-                                )
-                            else:
-                                form_data[clean_header] = st.text_input(
-                                    label=clean_header,
-                                    placeholder=f"{clean_header} (tùy chọn)",
-                                    label_visibility="collapsed",
-                                    key=f"{selected_sheet}_{clean_header}_input"
+                                    placeholder=placeholder,
+                                    help=help_text
                                 )
                         submit_data = st.form_submit_button("Gửi")
 
@@ -727,13 +728,16 @@ def main():
                                 clean_header = header.rstrip('*')
                                 format_type = column_formats.get(clean_header, 'text')
                                 value = form_data.get(clean_header, '')
+                                header_lower = clean_header.lower()
+                                is_numeric_text = any(keyword in header_lower for keyword in ['sđt', 'số điện thoại', 'cccd', 'cc', 'gttt'])
+
                                 if format_type == 'date':
                                     if value is None:
                                         st.error(f"Trường {clean_header} không được để trống.")
                                         missing_required.append(clean_header)
                                     else:
                                         validated_data[clean_header] = value.strftime("%d/%m/%Y")
-                                elif format_type == 'number':
+                                elif format_type == 'number' or is_numeric_text:
                                     if not value:
                                         st.error(f"Trường {clean_header} không được để trống.")
                                         missing_required.append(clean_header)
@@ -758,9 +762,12 @@ def main():
                                 clean_header = header.rstrip('*')
                                 format_type = column_formats.get(clean_header, 'text')
                                 value = form_data.get(clean_header, '')
+                                header_lower = clean_header.lower()
+                                is_numeric_text = any(keyword in header_lower for keyword in ['sđt', 'số điện thoại', 'cccd', 'cc', 'gttt'])
+
                                 if format_type == 'date':
                                     validated_data[clean_header] = value.strftime("%d/%m/%Y") if value else ''
-                                elif format_type == 'number':
+                                elif format_type == 'number' or is_numeric_text:
                                     if value and not re.match(r'^\d+$', str(value)):
                                         st.error(f"Trường {clean_header} chỉ được nhập số.")
                                         return
@@ -803,7 +810,7 @@ def main():
                         sh, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword
                     )
                     if headers and user_data:
-                        df = pd.DataFrame([row for _, row in user_data])
+                        df = pd.DataFrame([row for _, row in user_data], dtype=str)
                         df.insert(0, 'row_idx', [row_idx for row_idx, _ in user_data])
                         df['sheet'] = selected_view_sheet
 
@@ -896,7 +903,7 @@ def main():
                 if st.button("Tìm kiếm", key="search_button"):
                     headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
                     if headers and search_results:
-                        df = pd.DataFrame(search_results)
+                        df = pd.DataFrame(search_results, dtype=str)
                         df = clean_dataframe(df)
                         st.dataframe(df)
                     else:

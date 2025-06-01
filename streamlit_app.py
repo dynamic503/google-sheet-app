@@ -10,7 +10,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import pytz
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 import polars as pl
 import pandas as pd
 
@@ -47,17 +47,16 @@ def connect_to_gsheets():
     try:
         creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
         sheet_id = os.getenv("SHEET_ID")
+        st.write("GOOGLE_CREDENTIALS_JSON length:", len(creds_json) if creds_json else 0)  # Debug
+        st.write("SHEET_ID:", sheet_id)  # Debug
         if not creds_json or not sheet_id:
             st.error("Thiếu biến môi trường GOOGLE_CREDENTIALS_JSON hoặc SHEET_ID")
             return None
         
-        # Tạo credentials từ JSON
         creds_dict = json.loads(creds_json)
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         gc = gspread.authorize(creds)
-        
-        # Truy cập spreadsheet
         spread = gc.open_by_key(sheet_id)
         return spread
     except Exception as e:

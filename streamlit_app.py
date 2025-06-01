@@ -1,18 +1,17 @@
 import streamlit as st
 import hashlib
 import re
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
 import time
 from datetime import datetime, timedelta
+import pandas as pd
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import pytz
-import gspread
-from google.oauth2.service_account import Credentials
-import polars as pl
-import pandas as pd
 
 # --- Cấu hình logging ---
 logging.basicConfig(filename='app.log', level=logging.INFO)
@@ -24,20 +23,68 @@ st.set_page_config(page_title="Quản lý nhập liệu - Agribank", page_icon="
 # --- CSS để thiết kế giao diện hiện đại, tông đỏ Agribank ---
 st.markdown("""
     <style>
-    .css-1d391kg { background-color: #F5F5F5; }
-    .stButton>button {
-        width: 100%; background-color: #A91B2A; color: white; border-radius: 8px; padding: 10px;
-        font-size: 16px; font-weight: 500; border: none; margin-bottom: 5px; transition: background-color 0.3s;
+    /* Sidebar nền */
+    .css-1d391kg {
+        background-color: #F5F5F5;
     }
-    .stButton>button:hover { background-color: #8B1623; color: white; }
-    .required-label { color: red; font-weight: bold; }
-    .sidebar .sidebar-content { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; }
-    .sidebar-logo { display: block; margin: 0 auto; width: 200px; }
-    .branch-text { text-align: center; font-size: 14px; font-weight: bold; color: #333333; margin-top: 10px; }
-    .ag-root-wrapper { max-height: 70vh !important; overflow-x: auto !important; overflow-y: auto !important; }
-    @media (max-width: 600px) { .ag-root-wrapper { max-height: 50vh !important; } }
-    .ag-cell { white-space: normal !important; word-wrap: break-word !important; max-height: none !important; line-height: 1.5 !important; padding: 5px !important; }
-    .ag-header-cell { white-space: normal !important; word-wrap: break-word !important; }
+    /* Nút sidebar */
+    .stButton>button {
+        width: 100%;
+        background-color: #A91B2A;
+        color: white;
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 16px;
+        font-weight: 500;
+        border: none;
+        margin-bottom: 5px;
+        transition: background-color 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #8B1623;
+        color: white;
+    }
+    /* Trường bắt buộc bôi đỏ */
+    .required-label {
+        color: red;
+        font-weight: bold;
+    }
+    /* Logo và chữ chi nhánh */
+    .sidebar-logo {
+        display: block;
+        margin: 0 auto;
+        width: 200px;
+    }
+    .branch-text {
+        text-align: center;
+        font-size: 14px;
+        font-weight: bold;
+        color: #333333;
+        margin-top: 10px;
+    }
+    /* Tối ưu hiển thị bảng trên mobile */
+    .ag-root-wrapper {
+        max-height: 70vh !important;
+        overflow-x: auto !important;
+        overflow-y: auto !important;
+    }
+    @media (max-width: 600px) {
+        .ag-root-wrapper {
+            max-height: 50vh !important;
+        }
+    }
+    /* Đảm bảo nội dung cột không bị cắt */
+    .ag-cell {
+        white-space: normal !important;
+        word-wrap: break-word !important;
+        max-height: none !important;
+        line-height: 1.5 !important;
+        padding: 5px !important;
+    }
+    .ag-header-cell {
+        white-space: normal !important;
+        word-wrap: break-word !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -45,72 +92,79 @@ st.markdown("""
 @st.cache_resource
 def connect_to_gsheets():
     try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
         sheet_id = os.getenv("SHEET_ID")
-        st.write("GOOGLE_CREDENTIALS_JSON length:", len(creds_json) if creds_json else 0)  # Debug
-        st.write("SHEET_ID:", sheet_id)  # Debug
+        
         if not creds_json or not sheet_id:
             st.error("Thiếu biến môi trường GOOGLE_CREDENTIALS_JSON hoặc SHEET_ID")
             return None
         
         creds_dict = json.loads(creds_json)
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        gc = gspread.authorize(creds)
-        spread = gc.open_by_key(sheet_id)
-        return spread
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        return client.open_by_key(sheet_id)
     except Exception as e:
         st.error(f"Lỗi kết nối Google Sheets: {e}")
         logger.error(f"Lỗi kết nối Google Sheets: {e}")
         return None
 
-# --- Lấy định dạng cột từ hàng thứ 2 với xử lý ngày và số 0 ---
-def get_column_formats_from_row2(spread, sheet_name):
+# --- Lấy định dạng cột từ Google Sheet ---
+def get_column_formats(sh, sheet_name):
     try:
-        worksheet = spread.worksheet(sheet_name)
-        data = worksheet.get_all_values()
-        headers = data[0]
-        row2_values = data[1] if len(data) > 1 else ['' for _ in headers]
+        worksheet = sh.worksheet(sheet_name)
+        # Lấy toàn bộ dữ liệu sheet bao gồm định dạng
+        data = worksheet.get('A1:' + chr(65 + len(worksheet.row_values(1)) - 1) + '1', include_tailing_empty=False, value_render_option='FORMATTED_VALUE')
+        headers = data[0] if data else worksheet.row_values(1)
         formats = {}
-        for header, value in zip(headers, row2_values):
-            header_clean = str(header).rstrip('*')
-            if not value:
-                formats[header_clean] = 'text'
+        # Lấy định dạng từ API
+        sheet_formats = worksheet.get('A1:' + chr(65 + len(headers) - 1) + '1', include_tailing_empty=False, value_render_option='UNFORMATTED_VALUE', include_format=True)
+        for idx, cell in enumerate(sheet_formats[0]):
+            header = headers[idx].rstrip('*')
+            if 'format' in cell:
+                format_pattern = cell['format'].get('numberFormat', {}).get('type', '')
+                if format_pattern == 'DATE':
+                    formats[header] = 'date'
+                elif format_pattern == 'NUMBER':
+                    formats[header] = 'number'
+                else:
+                    formats[header] = 'text'
             else:
-                try:
-                    datetime.strptime(str(value), '%d/%m/%Y')
-                    formats[header_clean] = 'date'
-                except ValueError:
-                    try:
-                        float_value = float(value)
-                        if str(value).startswith('0') and len(str(value)) > 1:
-                            formats[header_clean] = 'text'
-                        else:
-                            formats[header_clean] = 'number'
-                    except ValueError:
-                        formats[header_clean] = 'text'
+                formats[header] = 'text'
         return formats
     except Exception as e:
-        st.error(f"Lỗi khi lấy định dạng cột từ hàng thứ 2: {e}")
-        logger.error(f"Lỗi khi lấy định dạng cột từ hàng thứ 2: {e}")
+        st.error(f"Lỗi khi lấy định dạng cột: {e}")
+        logger.error(f"Lỗi khi lấy định dạng cột: {e}")
         return {}
 
-# --- Làm sạch dữ liệu DataFrame với Polars, giữ số 0 và định dạng ngày ---
-def clean_dataframe(df, headers, column_formats):
+# --- Làm sạch dữ liệu DataFrame với kiểm tra ký tự ---
+def clean_dataframe(df):
+    """Làm sạch DataFrame, giữ nguyên ký tự tiếng Việt và log ký tự ẩn."""
     for col in df.columns:
-        if column_formats.get(col, 'text') == 'date':
-            df = df.with_columns(
-                pl.col(col).cast(pl.Utf8).apply(
-                    lambda x: datetime.strptime(x, '%m/%d/%Y').strftime('%d/%m/%Y') 
-                    if pd.notna(x) and re.match(r'^\d{2}/\d{2}/\d{4}$', str(x)) else x
-                ).alias(col)
-            )
-        elif column_formats.get(col, 'text') in ['text', 'number']:
-            df = df.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
+        try:
+            # Chuyển tất cả thành chuỗi, giữ nguyên số 0 ở đầu
+            df[col] = df[col].astype(str).str.strip()
+            # Thay thế giá trị không hợp lệ
+            df[col] = df[col].replace(['Err', 'Uhjr', '', ' ', '.', '   ', '<NA>'], pd.NA)
+            df[col] = df[col].fillna('')
+            # Lọc ký tự không in được và log chúng
+            original_values = df[col].copy()
+            df[col] = df[col].apply(lambda x: ''.join(c for c in x if c.isprintable() or ord(c) > 31))
+            # Log các ký tự bị loại bỏ
+            for idx, (orig, cleaned) in enumerate(zip(original_values, df[col])):
+                if orig != cleaned:
+                    diff_chars = ''.join(c for c in orig if c not in cleaned and ord(c) <= 31)
+                    if diff_chars:
+                        logger.warning(f"Row {idx}, Column {col}: Removed non-printable chars: {repr(diff_chars)}")
+            logger.info(f"DataFrame column {col} after cleaning: {df[col].head().to_list()}")
+        except Exception as e:
+            logger.error(f"Lỗi khi làm sạch cột {col}: {e}")
+    logger.info(f"DataFrame cleaned: {df.head().to_dict()}")
     return df
 
 # --- Validate chuỗi nhập liệu ---
 def validate_input(value, field_name):
+    """Kiểm tra chuỗi nhập liệu, linh hoạt hơn."""
     if not value:
         return False, f"Trường {field_name} không được để trống."
     cleaned_value = ''.join(c for c in str(value) if c.isprintable() or ord(c) > 31)
@@ -122,22 +176,26 @@ def validate_input(value, field_name):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(Exception)
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
 )
-def get_sheet_config(spread):
+def get_sheet_config(sh):
     cache_key = "sheet_config"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            worksheet = spread.worksheet("Config")
-            data = worksheet.get_all_values()
-            if not data or len(data) <= 1:
+            worksheet = sh.worksheet("Config")
+            data = worksheet.get_all_records()
+            if not data:
                 st.error("Sheet Config trống. Vui lòng thêm dữ liệu với các cột: Sheetname, Tìm kiếm, Nhập, Xem đã nhập.")
                 return []
-            headers = data[0]
-            rows = data[1:]
-            config = [dict(zip(headers, row)) for row in rows]
-            st.session_state[cache_key] = config
+            st.session_state[cache_key] = data
             st.session_state[f"{cache_key}_timestamp"] = time.time()
+        except gspread.exceptions.WorksheetNotFound:
+            st.error("Không tìm thấy sheet 'Config'. Vui lòng tạo sheet 'Config' với các cột: Sheetname, Tìm kiếm, Nhập, Xem đã nhập.")
+            return []
+        except gspread.exceptions.APIError as e:
+            if e.response.status_code == 429:
+                st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+            raise
         except Exception as e:
             st.error(f"Lỗi khi đọc sheet Config: {e}")
             logger.error(f"Lỗi khi đọc sheet Config: {e}")
@@ -145,15 +203,15 @@ def get_sheet_config(spread):
     return st.session_state[cache_key]
 
 # --- Lấy danh sách sheet nhập liệu từ Config ---
-def get_input_sheets(spread):
+def get_input_sheets(sh):
     cache_key = "input_sheets"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            config = get_sheet_config(spread)
+            config = get_sheet_config(sh)
             if not config:
                 return []
-            sheets = [row['Sheetname'] for row in config if row.get('Nhập') == '1']
-            existing_sheets = [s.title for s in spread.worksheets()]
+            sheets = [row['Sheetname'] for row in config if row.get('Nhập') == 1]
+            existing_sheets = [ws.title for ws in sh.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet nhập liệu nào hợp lệ theo cấu hình Config.")
@@ -166,15 +224,15 @@ def get_input_sheets(spread):
     return st.session_state[cache_key]
 
 # --- Lấy danh sách sheet tra cứu từ Config ---
-def get_lookup_sheets(spread):
+def get_lookup_sheets(sh):
     cache_key = "lookup_sheets"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            config = get_sheet_config(spread)
+            config = get_sheet_config(sh)
             if not config:
                 return []
-            sheets = [row['Sheetname'] for row in config if row.get('Tìm kiếm') == '1']
-            existing_sheets = [s.title for s in spread.worksheets()]
+            sheets = [row['Sheetname'] for row in config if row.get('Tìm kiếm') == 1]
+            existing_sheets = [ws.title for ws in sh.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet tra cứu nào hợp lệ theo cấu hình Config.")
@@ -187,15 +245,15 @@ def get_lookup_sheets(spread):
     return st.session_state[cache_key]
 
 # --- Lấy danh sách sheet xem đã nhập từ Config ---
-def get_view_sheets(spread):
+def get_view_sheets(sh):
     cache_key = "view_sheets"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            config = get_sheet_config(spread)
+            config = get_sheet_config(sh)
             if not config:
                 return []
-            sheets = [row['Sheetname'] for row in config if row.get('Xem đã nhập') == '1']
-            existing_sheets = [s.title for s in spread.worksheets()]
+            sheets = [row['Sheetname'] for row in config if row.get('Xem đã nhập') == 1]
+            existing_sheets = [ws.title for ws in sh.worksheets()]
             valid_sheets = [s for s in sheets if s in existing_sheets]
             if not valid_sheets:
                 st.warning("Không tìm thấy sheet xem dữ liệu nào hợp lệ theo cấu hình Config.")
@@ -231,28 +289,28 @@ def is_strong_password(password):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(Exception)
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
 )
-def get_users(spread):
+def get_users(sh):
     try:
-        worksheet = spread.worksheet("User")
-        data = worksheet.get_all_values()
-        if not data or len(data) <= 1:
-            return []
-        headers = data[0]
-        rows = data[1:]
-        return [dict(zip(headers, row)) for row in rows]
+        worksheet = sh.worksheet("User")
+        data = worksheet.get_all_records()
+        return data
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi lấy dữ liệu người dùng: {e}")
         logger.error(f"Lỗi khi lấy dữ liệu người dùng: {e}")
         return []
 
 # --- Xác thực người dùng ---
-def check_login(spread, username, password):
+def check_login(sh, username, password):
     if not username or not password:
         st.error("Tên đăng nhập hoặc mật khẩu không được để trống.")
         return None, False
-    users = get_users(spread)
+    users = get_users(sh)
     hashed_input = hash_password(password)
     for user in users:
         stored_password = str(user.get('Password', ''))
@@ -267,40 +325,45 @@ def check_login(spread, username, password):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(Exception)
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
 )
-def change_password(spread, username, old_pw, new_pw):
+def change_password(sh, username, old_pw, new_pw):
     try:
-        worksheet = spread.worksheet("User")
-        data = worksheet.get_all_values()
-        if not data or len(data) <= 1:
-            return False
-        headers = data[0]
-        rows = data[1:]
+        worksheet = sh.worksheet("User")
+        data = worksheet.get_all_records()
         hashed_old = hash_password(old_pw)
         hashed_new = hash_password(new_pw)
-        for idx, row in enumerate(rows):
-            if row[headers.index('Username')] == username and (str(row[headers.index('Password')]) == old_pw or str(row[headers.index('Password')]) == hashed_old):
-                rows[idx][headers.index('Password')] = hashed_new
-                worksheet.update('A2', [headers] + rows)
+
+        for idx, user in enumerate(data):
+            stored_password = str(user.get('Password', ''))
+            if user.get('Username') == username and (stored_password == old_pw or stored_password == hashed_old):
+                worksheet.update_cell(idx + 2, 2, hashed_new)
                 return True
         return False
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi đổi mật khẩu: {e}")
         logger.error(f"Lỗi khi đổi mật khẩu: {e}")
         return False
 
 # --- Lấy tiêu đề cột từ sheet, tách cột bắt buộc (*) ---
-def get_columns(spread, sheet_name):
+def get_columns(sh, sheet_name):
     cache_key = f"columns_{sheet_name}"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            worksheet = spread.worksheet(sheet_name)
+            worksheet = sh.worksheet(sheet_name)
             headers = worksheet.row_values(1)
-            required_columns = [h for h in headers if str(h).endswith('*')]
-            optional_columns = [h for h in headers if not str(h).endswith('*') and h not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
+            required_columns = [h for h in headers if h.endswith('*')]
+            optional_columns = [h for h in headers if not h.endswith('*') and h not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
             st.session_state[cache_key] = (required_columns, optional_columns)
             st.session_state[f"{cache_key}_timestamp"] = time.time()
+        except gspread.exceptions.APIError as e:
+            if e.response.status_code == 429:
+                st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+            raise
         except Exception as e:
             st.error(f"Lỗi khi lấy tiêu đề cột: {e}")
             logger.error(f"Lỗi khi lấy tiêu đề cột: {e}")
@@ -311,19 +374,23 @@ def get_columns(spread, sheet_name):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(Exception)
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
 )
-def ensure_columns(spread, sheet_name):
+def ensure_columns(sh, sheet_name):
     try:
-        worksheet = spread.worksheet(sheet_name)
+        worksheet = sh.worksheet(sheet_name)
         headers = worksheet.row_values(1)
         if "Nguoi_nhap" not in headers:
             headers.append("Nguoi_nhap")
-            worksheet.append_row(["Nguoi_nhap"])
+            worksheet.update_cell(1, len(headers), "Nguoi_nhap")
         if "Thoi_gian_nhap" not in headers:
             headers.append("Thoi_gian_nhap")
-            worksheet.append_row(["Thoi_gian_nhap"])
+            worksheet.update_cell(1, len(headers), "Thoi_gian_nhap")
         return headers
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi kiểm tra/thêm cột: {e}")
         logger.error(f"Lỗi khi kiểm tra/thêm cột: {e}")
@@ -333,21 +400,29 @@ def ensure_columns(spread, sheet_name):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(Exception)
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
 )
-def add_data_to_sheet(spread, sheet_name, data, username):
+def add_data_to_sheet(sh, sheet_name, data, username):
     try:
-        worksheet = spread.worksheet(sheet_name)
-        headers = ensure_columns(spread, sheet_name)
-        row_data = [data.get(str(header).rstrip('*'), '') for header in headers if header not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
+        worksheet = sh.worksheet(sheet_name)
+        headers = ensure_columns(sh, sheet_name)
+        row_data = [data.get(header.rstrip('*'), '') for header in headers[:-2]]
         row_data.append(username)
+        # Đặt múi giờ Việt Nam (UTC+7)
         vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
-        row_data.append(datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S"))
+        current_time = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
+        row_data.append(current_time)
         worksheet.append_row(row_data)
+        # Xóa cache liên quan
         for key in list(st.session_state.keys()):
             if key.startswith(f"{sheet_name}_"):
                 del st.session_state[key]
         return True
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+            logger.error(f"API Error 429: Quá nhiều yêu cầu khi thêm dữ liệu vào {sheet_name}")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi nhập liệu: {str(e)}")
         logger.error(f"Lỗi khi nhập liệu vào {sheet_name}: {str(e)}")
@@ -357,95 +432,105 @@ def add_data_to_sheet(spread, sheet_name, data, username):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(Exception)
+    retry=retry_if_exception_type(gspread.exceptions.APIError)
 )
-def update_data_in_sheet(spread, sheet_name, row_idx, data, username):
+def update_data_in_sheet(sh, sheet_name, row_idx, data, username):
     try:
-        worksheet = spread.worksheet(sheet_name)
-        headers = ensure_columns(spread, sheet_name)
-        row_data = [data.get(str(header).rstrip('*'), '') for header in headers if header not in ["Nguoi_nhap", "Thoi_gian_nhap"]]
+        worksheet = sh.worksheet(sheet_name)
+        headers = ensure_columns(sh, sheet_name)
+        row_data = [data.get(header.rstrip('*'), '') for header in headers[:-2]]
         row_data.append(username)
+        # Đặt múi giờ Việt Nam (UTC+7)
         vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
-        row_data.append(datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S"))
-        worksheet.update_cell(row_idx + 2, 1, row_data[0])  # Cập nhật từ cột 1
-        for i, value in enumerate(row_data[1:], start=2):
-            worksheet.update_cell(row_idx + 2, i, value)
+        current_time = datetime.now(vn_timezone).strftime("%d/%m/%Y %H:%M:%S")
+        row_data.append(current_time)
+        worksheet.update(f"A{row_idx + 2}:{chr(65 + len(headers) - 1)}{row_idx + 2}", [row_data])
+        # Xóa cache liên quan
         for key in list(st.session_state.keys()):
             if key.startswith(f"{sheet_name}_"):
                 del st.session_state[key]
         return True
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+            logger.error(f"API Error 429: Quá nhiều yêu cầu khi cập nhật dữ liệu tại {sheet_name}, row {row_idx}")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi cập nhật dữ liệu: {str(e)}")
         logger.error(f"Lỗi khi cập nhật dữ liệu tại {sheet_name}, row {row_idx}: {str(e)}")
         return False
 
 # --- Lấy dữ liệu đã nhập, hỗ trợ admin thấy tất cả ---
-def get_user_data(spread, sheet_name, username, role, start_date=None, end_date=None, keyword=None):
+def get_user_data(sh, sheet_name, username, role, start_date=None, end_date=None, keyword=None):
     try:
         cache_key = f"{sheet_name}_{username}_{role}_{start_date}_{end_date}_{keyword}"
-        worksheet = spread.worksheet(sheet_name)
-        data = worksheet.get_all_values()
-        if not data or len(data) <= 1:
-            return [], []
-        headers = data[0]
-        rows = data[1:]
-        df = pl.DataFrame(rows, schema=headers)
-        row_count = len(rows)
+        worksheet = sh.worksheet(sheet_name)
+        row_count = len(worksheet.get_all_records())
         cached_row_count = st.session_state.get(f"{cache_key}_row_count", 0)
 
         if cache_key not in st.session_state or row_count > cached_row_count:
-            column_formats = get_column_formats_from_row2(spread, sheet_name)
-            df = clean_dataframe(df, headers, column_formats)
-            filtered_data = df.filter(
-                (pl.col("Nguoi_nhap") == username) | (role.lower() == 'admin')
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                retry=retry_if_exception_type(gspread.exceptions.APIError)
             )
-            if start_date and end_date:
-                filtered_data = filtered_data.filter(
-                    pl.col("Thoi_gian_nhap").str.strptime(pl.Datetime, "%d/%m/%Y %H:%M:%S").dt.date().is_between(start_date, end_date)
-                )
-            if keyword:
-                keyword = keyword.lower()
-                filtered_data = filtered_data.filter(
-                    pl.concat_str([pl.col(c) for c in filtered_data.columns]).str.to_lowercase().str.contains(keyword)
-                )
-            st.session_state[cache_key] = (headers, list(zip(range(len(filtered_data)), filtered_data.to_dicts())))
+            def fetch_data():
+                data = worksheet.get_all_records(value_render_option='FORMATTED_VALUE')
+                headers = worksheet.row_values(1)
+                return headers, data
+
+            headers, data = fetch_data()
+            filtered_data = []
+            for idx, row in enumerate(data):
+                if role.lower() == 'admin' or row.get("Nguoi_nhap") == username:
+                    if start_date and end_date:
+                        try:
+                            entry_time = datetime.strptime(row.get("Thoi_gian_nhap", ""), "%d/%m/%Y %H:%M:%S")
+                            if not (start_date <= entry_time.date() <= end_date):
+                                continue
+                        except ValueError:
+                            continue
+                    if keyword:
+                        keyword = keyword.lower()
+                        if not any(keyword in str(value).lower() for value in row.values()):
+                            continue
+                    filtered_data.append((idx, row))
+            st.session_state[cache_key] = (headers, filtered_data)
             st.session_state[f"{cache_key}_row_count"] = row_count
         return st.session_state[cache_key]
+    except gspread.exceptions.APIError as e:
+        if e.response.status_code == 429:
+            st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+        raise
     except Exception as e:
         st.error(f"Lỗi khi lấy dữ liệu đã nhập: {e}")
         logger.error(f"Lỗi khi lấy dữ liệu đã nhập: {e}")
         return [], []
 
 # --- Tìm kiếm trong sheet ---
-def search_in_sheet(spread, sheet_name, keyword, column=None):
+def search_in_sheet(sh, sheet_name, keyword, column=None):
     cache_key = f"search_{sheet_name}_{keyword}_{column}"
     if cache_key not in st.session_state or st.session_state.get(f"{cache_key}_timestamp", 0) < time.time() - 60:
         try:
-            worksheet = spread.worksheet(sheet_name)
-            data = worksheet.get_all_values()
-            if not data or len(data) <= 1:
-                st.session_state[cache_key] = ([], [])
-                return st.session_state[cache_key]
-            headers = data[0]
-            rows = data[1:]
-            df = pl.DataFrame(rows, schema=headers)
-            column_formats = get_column_formats_from_row2(spread, sheet_name)
-            df = clean_dataframe(df, headers, column_formats)
+            worksheet = sh.worksheet(sheet_name)
+            # Lấy dữ liệu với giá trị dạng chuỗi
+            data = worksheet.get_all_records(value_render_option='FORMATTED_VALUE')
+            headers = worksheet.row_values(1)
             if not keyword:
-                st.session_state[cache_key] = (headers, df.to_dicts())
+                st.session_state[cache_key] = (headers, data)
             else:
                 keyword = keyword.lower()
                 if column == "Tất cả":
-                    filtered_data = df.filter(
-                        pl.concat_str([pl.col(c) for c in df.columns]).str.to_lowercase().str.contains(keyword)
-                    )
+                    filtered_data = [row for row in data if any(keyword in str(value).lower() for value in row.values())]
                 else:
-                    clean_column = str(column).rstrip('*')
-                    filtered_data = df.filter(
-                        pl.col(clean_column).str.to_lowercase().str.contains(keyword)
-                    )
-                st.session_state[cache_key] = (headers, filtered_data.to_dicts())
+                    clean_column = column.rstrip('*')
+                    filtered_data = [row for row in data if keyword in str(row.get(clean_column, '')).lower()]
+                st.session_state[cache_key] = (headers, filtered_data)
             st.session_state[f"{cache_key}_timestamp"] = time.time()
+        except gspread.exceptions.APIError as e:
+            if e.response.status_code == 429:
+                st.warning("Hệ thống đang bận, vui lòng thử lại sau ít giây.")
+            raise
         except Exception as e:
             st.error(f"Lỗi khi tìm kiếm dữ liệu: {e}")
             logger.error(f"Lỗi khi tìm kiếm dữ liệu: {e}")
@@ -471,8 +556,8 @@ def main():
     if 'selected_function' not in st.session_state:
         st.session_state.selected_function = "Nhập liệu"
 
-    spread = connect_to_gsheets()
-    if not spread:
+    sh = connect_to_gsheets()
+    if not sh:
         return
 
     if st.session_state.lockout_time > time.time():
@@ -506,7 +591,7 @@ def main():
                     st.error("Quá nhiều lần thử đăng nhập. Tài khoản bị khóa trong 5 phút.")
                     return
 
-                role, force_change_password = check_login(spread, username.strip(), password.strip())
+                role, force_change_password = check_login(sh, username.strip(), password.strip())
                 if role:
                     st.session_state.login = True
                     st.session_state.username = username.strip()
@@ -556,7 +641,7 @@ def main():
                             if not is_valid:
                                 st.error(msg)
                             else:
-                                if change_password(spread, st.session_state.username, old_password, new_password):
+                                if change_password(sh, st.session_state.username, old_password, new_password):
                                     st.success("🎉 Đổi mật khẩu thành công! Vui lòng đăng nhập lại.")
                                     st.session_state.login = False
                                     st.session_state.username = ''
@@ -571,53 +656,75 @@ def main():
 
         if st.session_state.selected_function in ["all", "Nhập liệu"] and not st.session_state.force_change_password:
             st.subheader("📝 Nhập liệu")
-            input_sheets = get_input_sheets(spread)
+            input_sheets = get_input_sheets(sh)
             if not input_sheets:
                 st.error("Không tìm thấy sheet nhập liệu hợp lệ.")
             else:
                 selected_sheet = st.selectbox("Chọn sheet để nhập liệu", input_sheets, key="input_sheet")
-                required_columns, optional_columns = get_columns(spread, selected_sheet)
-                column_formats = get_column_formats_from_row2(spread, selected_sheet)
+                required_columns, optional_columns = get_columns(sh, selected_sheet)
+                column_formats = get_column_formats(sh, selected_sheet)
                 if required_columns or optional_columns:
                     with st.form(f"input_form_{selected_sheet}"):
                         form_data = {}
                         for header in required_columns:
-                            clean_header = str(header).rstrip('*')
+                            clean_header = header.rstrip('*')
                             st.markdown(f'<span class="required-label">{clean_header} (bắt buộc)</span>', unsafe_allow_html=True)
                             format_type = column_formats.get(clean_header, 'text')
                             if format_type == 'date':
                                 form_data[clean_header] = st.date_input(
-                                    label=clean_header, label_visibility="collapsed", key=f"{selected_sheet}_{clean_header}_input",
-                                    value=None, format="DD/MM/YYYY"
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input",
+                                    value=None,
+                                    format="DD/MM/YYYY"
+                                )
+                            elif format_type == 'number':
+                                form_data[clean_header] = st.text_input(
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input",
+                                    help="Chỉ nhập số"
                                 )
                             else:
-                                help_text = "Chỉ nhập số" if format_type == 'number' else None
                                 form_data[clean_header] = st.text_input(
-                                    label=clean_header, label_visibility="collapsed", key=f"{selected_sheet}_{clean_header}_input",
-                                    help=help_text
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input"
                                 )
                         for header in optional_columns:
-                            clean_header = str(header).rstrip('*')
+                            clean_header = header.rstrip('*')
                             format_type = column_formats.get(clean_header, 'text')
                             if format_type == 'date':
                                 form_data[clean_header] = st.date_input(
-                                    label=clean_header, label_visibility="collapsed", key=f"{selected_sheet}_{clean_header}_input",
-                                    value=None, format="DD/MM/YYYY"
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input",
+                                    value=None,
+                                    format="DD/MM/YYYY"
+                                )
+                            elif format_type == 'number':
+                                form_data[clean_header] = st.text_input(
+                                    label=clean_header,
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input",
+                                    placeholder=f"{clean_header} (tùy chọn, chỉ nhập số)",
+                                    help="Chỉ nhập số"
                                 )
                             else:
-                                help_text = "Chỉ nhập số" if format_type == 'number' else None
-                                placeholder = f"{clean_header} (tùy chọn, chỉ nhập số)" if format_type == 'number' else f"{clean_header} (tùy chọn)"
                                 form_data[clean_header] = st.text_input(
-                                    label=clean_header, label_visibility="collapsed", key=f"{selected_sheet}_{clean_header}_input",
-                                    placeholder=placeholder, help=help_text
+                                    label=clean_header,
+                                    placeholder=f"{clean_header} (tùy chọn)",
+                                    label_visibility="collapsed",
+                                    key=f"{selected_sheet}_{clean_header}_input"
                                 )
                         submit_data = st.form_submit_button("Gửi")
 
                         if submit_data:
                             missing_required = []
                             validated_data = {}
+                            # Validate các trường bắt buộc
                             for header in required_columns:
-                                clean_header = str(header).rstrip('*')
+                                clean_header = header.rstrip('*')
                                 format_type = column_formats.get(clean_header, 'text')
                                 value = form_data.get(clean_header, '')
                                 if format_type == 'date':
@@ -634,7 +741,7 @@ def main():
                                         st.error(f"Trường {clean_header} chỉ được nhập số.")
                                         missing_required.append(clean_header)
                                     else:
-                                        validated_data[clean_header] = value
+                                        validated_data[clean_header] = str(value)
                                 else:
                                     is_valid, result = validate_input(value, clean_header)
                                     if not is_valid:
@@ -642,11 +749,13 @@ def main():
                                         missing_required.append(clean_header)
                                     else:
                                         validated_data[clean_header] = result
+                            # Nếu có trường bắt buộc bị thiếu, dừng lại và không lưu
                             if missing_required:
                                 st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
-                                return
+                                return  # Dừng xử lý, không lưu dữ liệu
+                            # Không validate các trường không bắt buộc, chỉ lấy giá trị
                             for header in optional_columns:
-                                clean_header = str(header).rstrip('*')
+                                clean_header = header.rstrip('*')
                                 format_type = column_formats.get(clean_header, 'text')
                                 value = form_data.get(clean_header, '')
                                 if format_type == 'date':
@@ -655,17 +764,18 @@ def main():
                                     if value and not re.match(r'^\d+$', str(value)):
                                         st.error(f"Trường {clean_header} chỉ được nhập số.")
                                         return
-                                    validated_data[clean_header] = value if value else ''
+                                    validated_data[clean_header] = str(value) if value else ''
                                 else:
                                     validated_data[clean_header] = value if value else ''
-                            if add_data_to_sheet(spread, selected_sheet, validated_data, st.session_state.username):
+                            # Lưu dữ liệu nếu không có lỗi
+                            if add_data_to_sheet(sh, selected_sheet, validated_data, st.session_state.username):
                                 st.success("🎉 Dữ liệu đã được nhập thành công!")
                             else:
                                 st.error("Lỗi khi nhập dữ liệu. Vui lòng kiểm tra log và thử lại.")
 
         if st.session_state.selected_function in ["all", "Xem và sửa dữ liệu"] and not st.session_state.force_change_password:
             st.subheader("📊 Xem và sửa dữ liệu đã nhập")
-            view_sheets = get_view_sheets(spread)
+            view_sheets = get_view_sheets(sh)
             if not view_sheets:
                 st.error("Không tìm thấy sheet xem dữ liệu hợp lệ.")
             else:
@@ -690,46 +800,66 @@ def main():
 
                 if 'filter_applied' in st.session_state and st.session_state.filter_applied:
                     headers, user_data = get_user_data(
-                        spread, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword
+                        sh, selected_view_sheet, st.session_state.username, st.session_state.role, start_date, end_date, search_keyword
                     )
                     if headers and user_data:
-                        df = pl.DataFrame([row for _, row in user_data])
-                        df = df.with_columns(pl.lit(range(len(df))).alias('row_idx'))
-                        df = df.with_columns(pl.lit(selected_view_sheet).alias('sheet'))
+                        df = pd.DataFrame([row for _, row in user_data])
+                        df.insert(0, 'row_idx', [row_idx for row_idx, _ in user_data])
+                        df['sheet'] = selected_view_sheet
 
-                        # Tạo grid với giữ nguyên định dạng
-                        gb = GridOptionsBuilder.from_dataframe(df.to_pandas())
+                        df = clean_dataframe(df)
+
+                        # Tạo grid với inline editing
+                        gb = GridOptionsBuilder.from_dataframe(df)
                         for col in df.columns:
                             if col not in ['row_idx', 'sheet']:
-                                gb.configure_column(col, minWidth=200, autoSize=True, wrapText=True, autoHeight=True, editable=True)
+                                gb.configure_column(
+                                    col,
+                                    minWidth=200,
+                                    autoSize=True,
+                                    wrapText=True,
+                                    autoHeight=True,
+                                    editable=True  # Bật chỉnh sửa trực tiếp
+                                )
                             else:
                                 gb.configure_column(col, hide=True)
                         gb.configure_grid_options(
-                            domLayout='autoHeight', suppressHorizontalScroll=False, suppressColumnVirtualisation=False,
-                            suppressCellFormat=True, autoSizeColumnsMode='fitCellContents', enableRangeSelection=True,
-                            rowSelection='multiple', enableCellTextSelection=True
+                            domLayout='autoHeight',
+                            suppressHorizontalScroll=False,
+                            suppressColumnVirtualisation=False,
+                            autoSizeColumnsMode='fitCellContents',
+                            enableRangeSelection=True,
+                            rowSelection='multiple',
+                            enableCellTextSelection=True
                         )
                         grid_response = AgGrid(
-                            df.to_pandas(), gridOptions=gb.build(), update_mode=GridUpdateMode.VALUE_CHANGED,
-                            data_return_mode=DataReturnMode.AS_INPUT, height=400 if len(df) < 10 else 600,
-                            fit_columns_on_grid_load=True, allow_unsafe_jscode=True, custom_css={"#gridToolBar": {"display": "none"}}
+                            df,
+                            gridOptions=gb.build(),
+                            update_mode=GridUpdateMode.VALUE_CHANGED,
+                            data_return_mode=DataReturnMode.AS_INPUT,
+                            height=400 if len(df) < 10 else 600,
+                            fit_columns_on_grid_load=True,
+                            allow_unsafe_jscode=True,
+                            custom_css={"#gridToolBar": {"display": "none"}},
                         )
 
-                        updated_df = pl.from_pandas(pd.DataFrame(grid_response['data']))
-                        if not updated_df.frame_equal(df):
-                            for idx, row in enumerate(updated_df.to_dicts()):
+                        # Lấy dữ liệu đã chỉnh sửa
+                        updated_df = pd.DataFrame(grid_response['data'])
+                        if not updated_df.empty and not updated_df.equals(df):
+                            for idx, row in updated_df.iterrows():
                                 row_idx = row['row_idx']
                                 if pd.isna(row_idx) or not str(row_idx).isdigit():
-                                    continue
-                                original_row = df.filter(pl.col('row_idx') == row_idx).row(0) if row_idx in df['row_idx'].to_list() else None
-                                if original_row and not all(row.get(k, '') == v for k, v in original_row.items() if k not in ['row_idx', 'sheet']):
+                                    continue  # Bỏ qua hàng không hợp lệ
+                                original_row = df[df['row_idx'] == row_idx].iloc[0] if row_idx in df['row_idx'].values else None
+                                if original_row is not None and not row.drop(['row_idx', 'sheet']).equals(original_row.drop(['row_idx', 'sheet'])):
                                     sheet_name = row['sheet']
-                                    updated_data = {k: v for k, v in row.items() if k not in ['row_idx', 'sheet']}
+                                    updated_data = row.drop(['row_idx', 'sheet']).to_dict()
+                                    # Validate dữ liệu trước khi cập nhật
                                     missing_required = []
                                     validated_data = {}
-                                    required_columns, _ = get_columns(spread, sheet_name)
+                                    required_columns, _ = get_columns(sh, sheet_name)
                                     for header in required_columns:
-                                        clean_header = str(header).rstrip('*')
+                                        clean_header = header.rstrip('*')
                                         is_valid, result = validate_input(updated_data.get(clean_header, ''), clean_header)
                                         if not is_valid:
                                             st.error(result)
@@ -744,28 +874,31 @@ def main():
                                     if missing_required:
                                         st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
                                         return
-                                    if update_data_in_sheet(spread, sheet_name, int(row_idx), validated_data, st.session_state.username):
-                                        st.success(f"🎉 Bản ghi #{int(row_idx) + 2} đã được cập nhật thành công!", icon="✅")
                                     else:
-                                        st.error("Lỗi khi cập nhật dữ liệu. Vui lòng kiểm tra log và thử lại.")
+                                        if update_data_in_sheet(sh, sheet_name, int(row_idx), validated_data, st.session_state.username):
+                                            st.success(f"🎉 Bản ghi #{int(row_idx) + 2} đã được cập nhật thành công!", icon="✅")
+                                        else:
+                                            st.error("Lỗi khi cập nhật dữ liệu. Vui lòng kiểm tra log và thử lại.")
+                                            return
                     else:
                         st.info("Không có dữ liệu nào được nhập trong khoảng thời gian hoặc từ khóa này.")
 
         if st.session_state.selected_function in ["all", "Tìm kiếm"] and not st.session_state.force_change_password:
             st.subheader("🔍 Tìm kiếm")
-            lookup_sheets = get_lookup_sheets(spread)
+            lookup_sheets = get_lookup_sheets(sh)
             if not lookup_sheets:
                 st.error("Không tìm thấy sheet tra cứu hợp lệ.")
             else:
                 selected_lookup_sheet = st.selectbox("Chọn sheet để tìm kiếm", lookup_sheets, key="lookup_sheet")
-                required_columns, optional_columns = get_columns(spread, selected_lookup_sheet)
-                headers = [str(h).rstrip('*') for h in required_columns] + [str(h) for h in optional_columns]
+                headers = [h.rstrip('*') for h in get_columns(sh, selected_lookup_sheet)[0]] + get_columns(sh, selected_lookup_sheet)[1]
                 search_column = st.selectbox("Chọn cột để tìm kiếm", ["Tất cả"] + headers, key="search_column")
                 keyword = st.text_input("Nhập từ khóa tìm kiếm", key="search_keyword")
                 if st.button("Tìm kiếm", key="search_button"):
-                    headers, search_results = search_in_sheet(spread, selected_lookup_sheet, keyword, search_column)
+                    headers, search_results = search_in_sheet(sh, selected_lookup_sheet, keyword, search_column)
                     if headers and search_results:
-                        st.dataframe(pl.DataFrame(search_results).to_pandas())
+                        df = pd.DataFrame(search_results)
+                        df = clean_dataframe(df)
+                        st.dataframe(df)
                     else:
                         st.info("Không tìm thấy kết quả nào khớp với từ khóa.")
 

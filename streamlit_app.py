@@ -52,7 +52,7 @@ st.markdown("""
     .sidebar-logo {
         display: block;
         margin: 0 auto;
-        width: 200px;
+        width: 120px;
     }
     .branch-text {
         text-align: center;
@@ -528,7 +528,7 @@ def main():
         st.error(f"Tài khoản bị khóa. Vui lòng thử lại sau {int(st.session_state.lockout_time - time.time())} giây.")
         return
 
-    st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=200)
+    st.sidebar.image("https://ruybangphuonghoang.com/wp-content/uploads/2024/10/logo-agribank-scaled.jpg", use_container_width=False, output_format="auto", caption="", width=120)
     st.sidebar.markdown('<div class="branch-text">Chi nhánh tỉnh Quảng Trị</div>', unsafe_allow_html=True)
     st.sidebar.markdown("---")
     
@@ -650,26 +650,29 @@ def main():
                         if submit_data:
                             missing_required = []
                             validated_data = {}
+                            # Validate các trường bắt buộc
                             for header in required_columns:
                                 clean_header = header.rstrip('*')
                                 is_valid, result = validate_input(form_data.get(clean_header, ''), clean_header)
                                 if not is_valid:
                                     st.error(result)
-                                    return
-                                validated_data[clean_header] = result
-                                if not form_data.get(clean_header):
                                     missing_required.append(clean_header)
+                                else:
+                                    validated_data[clean_header] = result
+                            # Nếu có trường bắt buộc bị thiếu, dừng lại và không lưu
+                            if missing_required:
+                                st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
+                                return  # Dừng xử lý, không lưu dữ liệu
+                            # Validate các trường không bắt buộc
                             for header in optional_columns:
                                 clean_header = header.rstrip('*')
                                 _, result = validate_input(form_data.get(clean_header, ''), clean_header)
-                                validated_data[clean_header] = result
-                            if missing_required:
-                                st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
+                                validated_data[clean_header] = result if result else ''  # Nếu trống thì lưu giá trị rỗng
+                            # Lưu dữ liệu nếu không có lỗi
+                            if add_data_to_sheet(sh, selected_sheet, validated_data, st.session_state.username):
+                                st.success("🎉 Dữ liệu đã được nhập thành công!")
                             else:
-                                if add_data_to_sheet(sh, selected_sheet, validated_data, st.session_state.username):
-                                    st.success("🎉 Dữ liệu đã được nhập thành công!")
-                                else:
-                                    st.error("Lỗi khi nhập dữ liệu. Vui lòng kiểm tra log và thử lại.")
+                                st.error("Lỗi khi nhập dữ liệu. Vui lòng kiểm tra log và thử lại.")
 
         if st.session_state.selected_function in ["all", "Xem và sửa dữ liệu"] and not st.session_state.force_change_password:
             st.subheader("📊 Xem và sửa dữ liệu đã nhập")
@@ -771,6 +774,7 @@ def main():
                                             validated_data[header] = result
                                     if missing_required:
                                         st.error(f"Vui lòng nhập các trường bắt buộc: {', '.join(missing_required)}")
+                                        return
                                     else:
                                         if update_data_in_sheet(sh, sheet_name, int(row_idx), validated_data, st.session_state.username):
                                             st.success(f"🎉 Bản ghi #{int(row_idx) + 2} đã được cập nhật thành công!")
